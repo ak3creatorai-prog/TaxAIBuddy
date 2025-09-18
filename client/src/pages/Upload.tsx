@@ -35,7 +35,7 @@ export default function Upload() {
   const [isUploading, setIsUploading] = useState(false);
 
   const createDocumentMutation = useMutation({
-    mutationFn: async (data: { fileName: string; assessmentYear: string }) => {
+    mutationFn: async (data: { fileName: string; assessmentYear: string; filePath: string }) => {
       const response = await apiRequest('POST', '/api/tax-documents', data);
       return await response.json();
     },
@@ -108,6 +108,25 @@ export default function Upload() {
     }
   };
 
+  // Helper function to extract object path from upload URL
+  const extractObjectPath = (uploadURL: string): string => {
+    if (!uploadURL.startsWith("https://storage.googleapis.com/")) {
+      return uploadURL;
+    }
+    
+    try {
+      const url = new URL(uploadURL);
+      const pathParts = url.pathname.split('/');
+      // URL format: /bucket-name/private-dir/uploads/uuid
+      // Extract the UUID (last part) to create /objects/uploads/uuid
+      const objectId = pathParts[pathParts.length - 1];
+      return `/objects/uploads/${objectId}`;
+    } catch (error) {
+      console.error('Error extracting object path:', error);
+      return uploadURL;
+    }
+  };
+
   const handleUploadComplete = async (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
     if (!result.successful || result.successful.length === 0) {
       toast({
@@ -121,18 +140,21 @@ export default function Upload() {
     setIsUploading(true);
     const uploadedFile = result.successful[0];
     const fileName = uploadedFile.name || 'Form16.pdf';
+    const uploadURL = uploadedFile.uploadURL as string;
+    const filePath = extractObjectPath(uploadURL);
 
     try {
-      // Create document record first
+      // Create document record with filePath
       const documentResult = await createDocumentMutation.mutateAsync({
         fileName,
-        assessmentYear
+        assessmentYear,
+        filePath
       });
 
-      // Update with upload URL
+      // Update with upload URL to set ACL and trigger processing
       await updateDocumentMutation.mutateAsync({
         documentId: documentResult.document.id,
-        uploadURL: uploadedFile.uploadURL as string
+        uploadURL: uploadURL
       });
 
     } catch (error) {

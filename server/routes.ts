@@ -179,12 +179,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 // Generate intelligent tax suggestions with user profile considerations
                 const userProfile = {
-                  age: extractedData.dateOfBirth ? 
-                    new Date().getFullYear() - new Date(extractedData.dateOfBirth).getFullYear() : undefined,
+                  age: undefined, // dateOfBirth not available in Form16Data, could be enhanced by user input later
                   hasParents: false, // Could be enhanced by user input later
                   isMetroCity: false, // Could be determined by address
                   hasHomeLoan: false, // Could be detected from deductions or user input
-                  investmentRiskProfile: (extractedData.grossSalary || 0) > 1000000 ? 'moderate' : 'conservative' as const
+                  investmentRiskProfile: ((extractedData.grossSalary || 0) > 1000000 ? 'moderate' : 'conservative') as 'moderate' | 'conservative' | 'aggressive'
                 };
 
                 const suggestions = taxCalculator.generateTaxSuggestions(
