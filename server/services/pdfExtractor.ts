@@ -436,11 +436,10 @@ export class PDFExtractorService {
       form16Data.grossSalary = this.parseAmount(grossSalaryResult);
     }
     
-    // Extract gross total income with Form 16 specific line-scoped patterns
+    // Extract gross total income with Form 16 specific line-scoped patterns (removed conflicting pattern)
     const grossTotalIncomePatterns = [
       /^(?:\d+\.?\s*)?Gross\s*Total\s*Income\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Total\s*Income\s*(?:from\s*all\s*sources)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Income\s*under\s*the\s*head\s*['""]?Salaries['""]?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+      /^(?:\d+\.?\s*)?Total\s*Income\s*(?:from\s*all\s*sources)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
     ];
     
     const grossTotalIncomeResult = searchInSection(partBStart, chapterVIAStart, grossTotalIncomePatterns);
