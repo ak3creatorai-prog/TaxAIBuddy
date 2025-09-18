@@ -86,6 +86,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // DEBUG: Test endpoint to manually trigger background processing
+  app.post("/api/debug/process-document/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const documentId = req.params.id;
+      
+      // Get document from database
+      const document = await storage.getTaxDocument(documentId, userId);
+      if (!document) {
+        return res.status(404).json({ error: "Document not found" });
+      }
+      
+      console.log(`[DEBUG] Manually triggering processing for document ${documentId} with file path: ${document.filePath}`);
+      
+      // Manually trigger background processing
+      void processDocumentAsync(documentId, userId, document.filePath, document).catch(async (error) => {
+        console.error(`[DEBUG] Manual processing failed for ${documentId}:`, error);
+        try {
+          await storage.updateTaxDocument(documentId, userId, {
+            status: 'failed',
+            processedAt: new Date()
+          });
+          console.log(`[DEBUG] Document ${documentId} marked as failed due to processing error`);
+        } catch (updateError) {
+          console.error(`[DEBUG] Failed to mark document ${documentId} as failed:`, updateError);
+        }
+      });
+      
+      res.json({ message: "Background processing triggered", documentId });
+    } catch (error) {
+      console.error('Error in debug process route:', error);
+      res.status(500).json({ error: 'Failed to trigger processing' });
+    }
+  });
+
   // Object storage routes for PDF uploads
   app.get("/objects/:objectPath(*)", isAuthenticated, async (req: any, res) => {
     const userId = req.user?.claims?.sub;
@@ -172,171 +207,175 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`[ROUTE DEBUG] Upload complete route finished, about to start background processing for ${documentId}`);
       
       // Process PDF in background after returning response
-      setImmediate(() => {
-        (async () => {
-          console.log(`[PDF Processing] Starting background processing for document ${documentId}`);
-          try {
-          // Ensure we have updated document data for processing
-          if (!updatedDocument) {
-            console.error('Updated document is undefined, cannot process PDF');
-            return;
-          }
-          console.log(`[PDF Processing] Document verified, file path: ${objectPath}`);
-          
-          console.log(`[PDF Processing] Getting object file from storage...`);
-          const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
-          console.log(`[PDF Processing] Object file retrieved successfully`);
-          
-          // Download and process PDF with safe size validation using pipeline
-          const chunks: Buffer[] = [];
-          const maxSize = 50 * 1024 * 1024; // 50MB limit
-          const sourceStream = objectFile.createReadStream();
-          const byteLimitTransform = new ByteLimitTransform(maxSize);
-          
-          // Collect chunks in a transform stream
-          const collectTransform = new Transform({
-            transform(chunk, encoding, callback) {
-              chunks.push(chunk);
-              callback(null, chunk);
-            }
+      console.log(`[ROUTE DEBUG] Calling processDocumentAsync function for ${documentId}`);
+      void processDocumentAsync(documentId, userId, objectPath, updatedDocument).catch(async (error) => {
+        console.error(`[ROUTE DEBUG] Background processing failed for ${documentId}:`, error);
+        try {
+          await storage.updateTaxDocument(documentId, userId, {
+            status: 'failed',
+            processedAt: new Date()
           });
-          
-          try {
-            console.log(`[PDF Processing] Starting PDF download pipeline...`);
-            // Use safe pipeline for stream handling
-            try {
-              await pipeline(sourceStream, byteLimitTransform, collectTransform);
-              console.log(`[PDF Processing] Pipeline completed successfully`);
-            } catch (pipelineError) {
-              console.error(`[PDF Processing] Pipeline failed:`, pipelineError);
-              throw new Error(`PDF download pipeline failed: ${pipelineError.message}`);
-            }
-            
-            const pdfBuffer = Buffer.concat(chunks);
-            console.log(`[PDF Processing] PDF downloaded successfully, size: ${pdfBuffer.length} bytes`);
-            
-            console.log(`[PDF Processing] Starting Form 16 data extraction...`);
-            let extractedData;
-            try {
-              extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
-              console.log(`[PDF Processing] Extraction completed, extracted data:`, JSON.stringify(extractedData, null, 2));
-            } catch (extractionError) {
-              console.error(`[PDF Processing] Data extraction failed:`, extractionError);
-              throw new Error(`PDF data extraction failed: ${extractionError.message}`);
-            }
-              
-              // Update document with extracted data
-              console.log(`[PDF Processing] Updating document with extracted data...`);
-              try {
-                await storage.updateTaxDocument(documentId, userId, {
-                  extractedData,
-                  status: 'completed',
-                  processedAt: new Date()
-                });
-                console.log(`[PDF Processing] Document updated successfully to completed status`);
-              } catch (updateError) {
-                console.error(`[PDF Processing] Document update failed:`, updateError);
-                throw new Error(`Document update failed: ${updateError.message}`);
-              }
-
-              // Create income sources and investments from extracted data
-              if (extractedData.grossSalary) {
-                await storage.createIncomeSource({
-                  userId,
-                  documentId,
-                  source: 'salary',
-                  amount: extractedData.grossSalary.toString(),
-                  assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
-                  description: 'Salary income from Form 16'
-                });
-              }
-
-              // Create investments from deductions
-              if (extractedData.deductions) {
-                for (const [section, amount] of Object.entries(extractedData.deductions)) {
-                  await storage.createInvestment({
-                    userId,
-                    documentId,
-                    section,
-                    type: `${section} Investment`,
-                    amount: amount.toString(),
-                    assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
-                    description: `Deduction under section ${section}`
-                  });
-                }
-              }
-
-              // Calculate taxes
-              if (extractedData.grossSalary) {
-                const comparison = taxCalculator.compareRegimes(
-                  extractedData.grossSalary,
-                  extractedData.deductions || {}
-                );
-
-                await storage.createTaxCalculation({
-                  userId,
-                  documentId,
-                  assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
-                  grossIncome: extractedData.grossSalary.toString(),
-                  totalDeductions: comparison.oldRegime.totalDeductions.toString(),
-                  taxableIncome: comparison.oldRegime.taxableIncome.toString(),
-                  oldRegimeTax: comparison.oldRegime.totalTax.toString(),
-                  newRegimeTax: comparison.newRegime.totalTax.toString(),
-                  tdsDeducted: extractedData.tdsDeducted?.toString() || '0',
-                  refundAmount: ((extractedData.tdsDeducted || 0) - comparison.newRegime.totalTax).toString()
-                });
-
-                // Generate intelligent tax suggestions with user profile considerations
-                const userProfile = {
-                  age: undefined,
-                  hasParents: false,
-                  isMetroCity: false,
-                  hasHomeLoan: false,
-                  investmentRiskProfile: ((extractedData.grossSalary || 0) > 1000000 ? 'moderate' : 'conservative') as 'moderate' | 'conservative' | 'aggressive'
-                };
-
-                const suggestions = taxCalculator.generateTaxSuggestions(
-                  extractedData.grossSalary,
-                  extractedData.deductions || {},
-                  extractedData.assessmentYear || updatedDocument.assessmentYear,
-                  userProfile
-                );
-
-                for (const suggestion of suggestions) {
-                  await storage.createTaxSuggestion({
-                    userId,
-                    assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
-                    section: suggestion.section,
-                    category: suggestion.category,
-                    suggestion: suggestion.suggestion,
-                    currentAmount: suggestion.currentAmount.toString(),
-                    maxAmount: suggestion.maxAmount.toString(),
-                    potentialSaving: suggestion.potentialSaving.toString(),
-                    priority: suggestion.priority,
-                    urgency: suggestion.urgency
-                  });
-                }
-              }
-            } catch (processError) {
-              console.error('Error processing PDF data:', processError);
-              await storage.updateTaxDocument(documentId, userId, {
-                status: 'failed',
-                processedAt: new Date()
-              });
-            }
-          } catch (pipelineError) {
-            console.error('Error during PDF download or size validation:', pipelineError);
-            await storage.updateTaxDocument(documentId, userId, {
-              status: 'failed',
-              processedAt: new Date()
-            });
-          }
+          console.log(`[ROUTE DEBUG] Document ${documentId} marked as failed due to processing error`);
+        } catch (updateError) {
+          console.error(`[ROUTE DEBUG] Failed to mark document ${documentId} as failed:`, updateError);
+        }
       });
+      console.log(`[ROUTE DEBUG] processDocumentAsync background job started for ${documentId}`);
     } catch (error) {
-      console.error("Error updating document upload:", error);
-      res.status(500).json({ error: "Failed to update document" });
+      console.error('Error in upload-complete route:', error);
+      res.status(500).json({ error: 'Upload processing failed' });
     }
   });
+
+  // Separate async function for PDF processing
+  async function processDocumentAsync(documentId: string, userId: string, objectPath: string, updatedDocument: any) {
+    console.log(`[PDF Processing] Starting background processing for document ${documentId}`);
+    
+    try {
+      // Ensure we have updated document data for processing
+      if (!updatedDocument) {
+        console.error('Updated document is undefined, cannot process PDF');
+        return;
+      }
+      console.log(`[PDF Processing] Document verified, file path: ${objectPath}`);
+      
+      // Get object file from storage
+      console.log(`[PDF Processing] Getting object file from storage...`);
+      const objectStorageService = new ObjectStorageService();
+      const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
+      console.log(`[PDF Processing] Object file retrieved successfully`);
+      
+      // Download PDF with size validation
+      const chunks: Buffer[] = [];
+      const maxSize = 50 * 1024 * 1024; // 50MB limit
+      const sourceStream = objectFile.createReadStream();
+      const byteLimitTransform = new ByteLimitTransform(maxSize);
+      
+      const collectTransform = new Transform({
+        transform(chunk, encoding, callback) {
+          chunks.push(chunk);
+          callback(null, chunk);
+        }
+      });
+      
+      console.log(`[PDF Processing] Starting PDF download pipeline...`);
+      await pipeline(sourceStream, byteLimitTransform, collectTransform);
+      console.log(`[PDF Processing] Pipeline completed successfully`);
+      
+      const pdfBuffer = Buffer.concat(chunks);
+      console.log(`[PDF Processing] PDF downloaded successfully, size: ${pdfBuffer.length} bytes`);
+      
+      // Extract data from PDF
+      console.log(`[PDF Processing] Starting Form 16 data extraction...`);
+      const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
+      console.log(`[PDF Processing] Extraction completed, extracted data:`, JSON.stringify(extractedData, null, 2));
+      
+      // Update document with extracted data
+      console.log(`[PDF Processing] Updating document with extracted data...`);
+      await storage.updateTaxDocument(documentId, userId, {
+        extractedData,
+        status: 'completed',
+        processedAt: new Date()
+      });
+      console.log(`[PDF Processing] Document updated successfully to completed status`);
+
+      // Create income sources and investments from extracted data
+      if (extractedData.grossSalary) {
+        await storage.createIncomeSource({
+          userId,
+          documentId,
+          source: 'salary',
+          amount: extractedData.grossSalary.toString(),
+          assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
+          description: 'Salary income from Form 16'
+        });
+      }
+
+      // Create investments from deductions
+      if (extractedData.deductions) {
+        for (const [section, amount] of Object.entries(extractedData.deductions)) {
+          await storage.createInvestment({
+            userId,
+            documentId,
+            section,
+            type: `${section} Investment`,
+            amount: amount.toString(),
+            assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
+            description: `Deduction under section ${section}`
+          });
+        }
+      }
+
+      // Calculate taxes
+      if (extractedData.grossSalary) {
+        const comparison = taxCalculator.compareRegimes(
+          extractedData.grossSalary,
+          extractedData.deductions || {}
+        );
+
+        await storage.createTaxCalculation({
+          userId,
+          documentId,
+          assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
+          grossIncome: extractedData.grossSalary.toString(),
+          totalDeductions: comparison.oldRegime.totalDeductions.toString(),
+          taxableIncome: comparison.oldRegime.taxableIncome.toString(),
+          oldRegimeTax: comparison.oldRegime.totalTax.toString(),
+          newRegimeTax: comparison.newRegime.totalTax.toString(),
+          tdsDeducted: extractedData.tdsDeducted?.toString() || '0',
+          refundAmount: ((extractedData.tdsDeducted || 0) - comparison.newRegime.totalTax).toString()
+        });
+
+        // Generate intelligent tax suggestions
+        const userProfile = {
+          age: undefined,
+          hasParents: false,
+          isMetroCity: false,
+          hasHomeLoan: false,
+          investmentRiskProfile: ((extractedData.grossSalary || 0) > 1000000 ? 'moderate' : 'conservative') as 'moderate' | 'conservative' | 'aggressive'
+        };
+
+        const suggestions = taxCalculator.generateTaxSuggestions(
+          extractedData.grossSalary,
+          extractedData.deductions || {},
+          extractedData.assessmentYear || updatedDocument.assessmentYear,
+          userProfile
+        );
+
+        for (const suggestion of suggestions) {
+          await storage.createTaxSuggestion({
+            userId,
+            assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
+            section: suggestion.section,
+            category: suggestion.category,
+            suggestion: suggestion.suggestion,
+            currentAmount: suggestion.currentAmount.toString(),
+            maxAmount: suggestion.maxAmount.toString(),
+            potentialSaving: suggestion.potentialSaving.toString(),
+            priority: suggestion.priority,
+            urgency: suggestion.urgency
+          });
+        }
+      }
+      
+      console.log(`[PDF Processing] Background processing completed successfully for document ${documentId}`);
+      
+    } catch (error) {
+      console.error(`[PDF Processing] Critical error during processing:`, error);
+      console.error(`[PDF Processing] Error stack:`, error.stack);
+      
+      // Mark document as failed
+      try {
+        await storage.updateTaxDocument(documentId, userId, {
+          status: 'failed',
+          processedAt: new Date()
+        });
+        console.log(`[PDF Processing] Document marked as failed due to error`);
+      } catch (failedUpdateError) {
+        console.error(`[PDF Processing] Failed to mark document as failed:`, failedUpdateError);
+      }
+    }
+  }
 
   app.get('/api/tax-documents/:id', isAuthenticated, async (req: any, res) => {
     try {
