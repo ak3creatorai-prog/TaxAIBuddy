@@ -109,7 +109,7 @@ export default function Upload() {
   };
 
   const handleUploadComplete = async (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
-    if (result.successful.length === 0) {
+    if (!result.successful || result.successful.length === 0) {
       toast({
         title: "Upload Failed",
         description: "No files were uploaded successfully",

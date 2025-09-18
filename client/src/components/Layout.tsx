@@ -37,8 +37,8 @@ export function Layout({ children }: LayoutProps) {
                 <Calculator className="h-6 w-6" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-foreground">TaxAssist</h1>
-                <p className="text-xs text-muted-foreground">Form 16 Tax Assistant</p>
+                <h1 className="text-xl font-bold text-foreground">EasyTaxAnalyser</h1>
+<p className="text-xs text-muted-foreground">Smart Tax Analysis Tool</p>
               </div>
             </Link>
             

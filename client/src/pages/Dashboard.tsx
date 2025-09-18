@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +36,7 @@ interface DashboardStats {
 }
 
 export default function Dashboard() {
+  const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [stats, setStats] = useState<DashboardStats>({
     totalIncome: 0,
@@ -49,6 +51,10 @@ export default function Dashboard() {
     queryKey: ['/api/dashboard'],
     retry: false,
   });
+
+  const handleUploadClick = () => {
+    setLocation('/upload');
+  };
 
   useEffect(() => {
     if (error && isUnauthorizedError(error as Error)) {
@@ -67,15 +73,15 @@ export default function Dashboard() {
   useEffect(() => {
     if (dashboardData) {
       // Calculate stats from dashboard data
-      const totalIncome = dashboardData.incomeSources.reduce((sum, income) => 
+      const totalIncome = (dashboardData?.incomeSources ?? []).reduce((sum, income) => 
         sum + parseFloat(income.amount || '0'), 0
       );
       
-      const totalDeductions = dashboardData.investments.reduce((sum, investment) => 
+      const totalDeductions = (dashboardData?.investments ?? []).reduce((sum, investment) => 
         sum + parseFloat(investment.amount || '0'), 0
       );
 
-      const latestCalculation = dashboardData.calculations[0];
+      const latestCalculation = dashboardData?.calculations?.[0];
       const taxLiability = latestCalculation ? parseFloat(latestCalculation.oldRegimeTax || '0') : 0;
       const newRegimeTax = latestCalculation ? parseFloat(latestCalculation.newRegimeTax || '0') : 0;
       const potentialSavings = Math.max(0, taxLiability - newRegimeTax);
@@ -85,7 +91,7 @@ export default function Dashboard() {
         totalDeductions,
         taxLiability,
         potentialSavings,
-        documentsCount: dashboardData.documents.length,
+        documentsCount: (dashboardData?.documents?.length ?? 0),
         lastCalculated: latestCalculation?.calculatedAt || ''
       });
     }
@@ -116,9 +122,9 @@ export default function Dashboard() {
   };
 
   const getIncomeGrowth = () => {
-    if (dashboardData?.calculations.length > 1) {
-      const current = parseFloat(dashboardData.calculations[0]?.grossIncome || '0');
-      const previous = parseFloat(dashboardData.calculations[1]?.grossIncome || '0');
+    if ((dashboardData?.calculations?.length ?? 0) > 1) {
+      const current = parseFloat(dashboardData?.calculations?.[0]?.grossIncome || '0');
+      const previous = parseFloat(dashboardData?.calculations?.[1]?.grossIncome || '0');
       if (previous > 0) {
         return ((current - previous) / previous) * 100;
       }
@@ -241,16 +247,16 @@ export default function Dashboard() {
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            {dashboardData?.documents.length === 0 ? (
+            {(dashboardData?.documents?.length ?? 0) === 0 ? (
               <div className="text-center py-6 text-muted-foreground" data-testid="text-no-documents">
                 <FileText className="h-12 w-12 mx-auto mb-2 opacity-50" />
                 <p>No documents uploaded yet</p>
-                <Button variant="outline" size="sm" className="mt-2" data-testid="button-upload-first">
+                <Button variant="outline" size="sm" className="mt-2" onClick={handleUploadClick} data-testid="button-upload-first">
                   Upload Form 16
                 </Button>
               </div>
             ) : (
-              dashboardData.documents.slice(0, 3).map((doc, index) => (
+              (dashboardData?.documents ?? []).slice(0, 3).map((doc, index) => (
                 <div key={doc.id} className="flex items-center space-x-3 p-3 border border-border rounded-lg" data-testid={`document-${index}`}>
                   <div className="bg-primary/10 p-2 rounded">
                     <FileText className="h-4 w-4 text-primary" />
@@ -260,7 +266,10 @@ export default function Dashboard() {
                       {doc.fileName}
                     </p>
                     <p className="text-xs text-muted-foreground" data-testid={`document-date-${index}`}>
-                      {new Date(doc.uploadedAt).toLocaleDateString()}
+                      {(() => {
+                        const date = doc?.uploadedAt ? new Date(doc.uploadedAt) : null;
+                        return date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : 'Unknown date';
+                      })()}
                     </p>
                   </div>
                   <Badge 
@@ -283,22 +292,22 @@ export default function Dashboard() {
                 <Lightbulb className="h-5 w-5" />
                 <span>Smart Tax Planning</span>
               </div>
-              {dashboardData?.suggestions.length > 0 && (
+              {(dashboardData?.suggestions?.length ?? 0) > 0 && (
                 <Badge variant="secondary" className="text-xs" data-testid="suggestions-count">
-                  {dashboardData.suggestions.filter(s => s.urgency === 'high').length} high priority
+                  {(dashboardData?.suggestions ?? []).filter(s => s.urgency === 'high').length} high priority
                 </Badge>
               )}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {dashboardData?.suggestions.length === 0 ? (
+            {(dashboardData?.suggestions?.length ?? 0) === 0 ? (
               <div className="text-center py-6 text-muted-foreground" data-testid="text-no-suggestions">
                 <Lightbulb className="h-12 w-12 mx-auto mb-2 opacity-50" />
                 <p>No suggestions available yet</p>
                 <p className="text-xs">Upload Form 16 to get personalized advice</p>
               </div>
             ) : (
-              dashboardData.suggestions
+              (dashboardData?.suggestions ?? [])
                 .sort((a, b) => {
                   // Sort by urgency first (high > medium > low), then by potential savings
                   const urgencyOrder = { 'high': 3, 'medium': 2, 'low': 1 };
@@ -346,7 +355,7 @@ export default function Dashboard() {
                             <div className="flex items-center space-x-2 mb-1">
                               <h4 className="text-sm font-semibold" data-testid={`suggestion-category-${index}`}>
                                 {categoryIcons[suggestion.category as keyof typeof categoryIcons] || '📋'} 
-                                {suggestion.category.charAt(0).toUpperCase() + suggestion.category.slice(1)}
+                                {((suggestion?.category ?? 'general').charAt(0).toUpperCase() + (suggestion?.category ?? 'general').slice(1))}
                                 {suggestion.section && (
                                   <span className="text-xs text-muted-foreground ml-1">
                                     ({suggestion.section})
@@ -396,10 +405,10 @@ export default function Dashboard() {
                 })
             )}
             
-            {dashboardData?.suggestions.length > 4 && (
+            {(dashboardData?.suggestions?.length ?? 0) > 4 && (
               <div className="text-center pt-2">
                 <Badge variant="outline" className="text-xs">
-                  +{dashboardData.suggestions.length - 4} more suggestions available
+                  +{(dashboardData?.suggestions?.length ?? 0) - 4} more suggestions available
                 </Badge>
               </div>
             )}
@@ -412,7 +421,7 @@ export default function Dashboard() {
             <CardTitle>Quick Actions</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <Button variant="outline" className="w-full justify-start" data-testid="button-upload-form16">
+            <Button variant="outline" className="w-full justify-start" onClick={handleUploadClick} data-testid="button-upload-form16">
               <FileText className="h-4 w-4 mr-2" />
               Upload Form 16
             </Button>
@@ -436,7 +445,7 @@ export default function Dashboard() {
       </div>
 
       {/* Year-over-Year Summary */}
-      {dashboardData?.calculations.length > 1 && (
+      {(dashboardData?.calculations?.length ?? 0) > 1 && (
         <Card data-testid="card-year-summary">
           <CardHeader>
             <CardTitle>Year-over-Year Summary</CardTitle>

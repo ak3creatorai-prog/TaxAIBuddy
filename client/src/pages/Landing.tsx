@@ -66,7 +66,7 @@ export default function Landing() {
                 <Calculator className="h-6 w-6" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-foreground">TaxAssist</h1>
+                <h1 className="text-xl font-bold text-foreground">EasyTaxAnalyser</h1>
                 <p className="text-xs text-muted-foreground">Form 16 Tax Assistant</p>
               </div>
             </div>
@@ -186,7 +186,7 @@ export default function Landing() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
             <div>
               <h2 className="text-3xl font-bold text-foreground mb-6" data-testid="heading-benefits">
-                Why Choose TaxAssist?
+                Why Choose EasyTaxAnalyser?
               </h2>
               
               <div className="space-y-4">
@@ -243,7 +243,7 @@ export default function Landing() {
           </h2>
           
           <p className="text-xl opacity-90 mb-8 max-w-2xl mx-auto">
-            Join thousands of professionals who trust TaxAssist for their tax planning needs.
+            Join thousands of professionals who trust EasyTaxAnalyser for their tax planning needs.
             Start your free analysis today.
           </p>
           
