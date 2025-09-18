@@ -68,7 +68,24 @@ export class PDFExtractorService {
       return this.parseForm16Text(extractedText);
     } catch (error) {
       console.error('PDF extraction error:', error);
-      throw new Error('Failed to extract data from PDF');
+      
+      // Handle specific PDF errors with user-friendly messages
+      const errorMessage = (error instanceof Error ? error.message : String(error)).toLowerCase();
+      
+      if (errorMessage.includes('password') || errorMessage.includes('encrypted')) {
+        throw new Error('PDF is password-protected. Please upload an unprotected PDF file.');
+      }
+      
+      if (errorMessage.includes('invalid pdf') || errorMessage.includes('corrupted')) {
+        throw new Error('PDF file appears to be corrupted. Please try uploading a different file.');
+      }
+      
+      if (errorMessage.includes('timeout') || errorMessage.includes('cancelled')) {
+        throw new Error('PDF processing took too long. Please try uploading a smaller file.');
+      }
+      
+      // Generic fallback error
+      throw new Error('Unable to process PDF file. Please ensure it is a valid Form 16 document.');
     }
   }
 

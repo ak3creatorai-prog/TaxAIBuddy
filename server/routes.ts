@@ -8,6 +8,28 @@ import { PDFExtractorService } from "./services/pdfExtractor";
 import { TaxCalculatorService } from "./services/taxCalculator";
 import { insertTaxDocumentSchema, insertIncomeSourceSchema, insertInvestmentSchema } from "@shared/schema";
 import { z } from "zod";
+import { pipeline } from "stream/promises";
+import { Transform } from "stream";
+
+// Safe ByteLimit transform to prevent DoS attacks
+class ByteLimitTransform extends Transform {
+  private totalBytes = 0;
+  private readonly maxBytes: number;
+
+  constructor(maxBytes: number) {
+    super();
+    this.maxBytes = maxBytes;
+  }
+
+  _transform(chunk: any, encoding: BufferEncoding, callback: Function) {
+    this.totalBytes += chunk.length;
+    if (this.totalBytes > this.maxBytes) {
+      callback(new Error(`File size exceeds limit of ${Math.round(this.maxBytes / (1024 * 1024))}MB`));
+      return;
+    }
+    callback(null, chunk);
+  }
+}
 
 const pdfExtractor = new PDFExtractorService();
 const taxCalculator = new TaxCalculatorService();
@@ -150,16 +172,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Process PDF in background after returning response
       setImmediate(async () => {
         try {
+          // Ensure we have updated document data for processing
+          if (!updatedDocument) {
+            console.error('Updated document is undefined, cannot process PDF');
+            return;
+          }
+          
           const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
           
-          // Download and process PDF
+          // Download and process PDF with safe size validation using pipeline
           const chunks: Buffer[] = [];
-          const stream = objectFile.createReadStream();
+          const maxSize = 50 * 1024 * 1024; // 50MB limit
+          const sourceStream = objectFile.createReadStream();
+          const byteLimitTransform = new ByteLimitTransform(maxSize);
           
-          stream.on('data', (chunk) => chunks.push(chunk));
-          stream.on('end', async () => {
-            try {
-              const pdfBuffer = Buffer.concat(chunks);
+          // Collect chunks in a transform stream
+          const collectTransform = new Transform({
+            transform(chunk, encoding, callback) {
+              chunks.push(chunk);
+              callback(null, chunk);
+            }
+          });
+          
+          try {
+            // Use safe pipeline for stream handling
+            await pipeline(sourceStream, byteLimitTransform, collectTransform);
+            const pdfBuffer = Buffer.concat(chunks);
               const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
               
               // Update document with extracted data
@@ -176,7 +214,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   documentId,
                   source: 'salary',
                   amount: extractedData.grossSalary.toString(),
-                  assessmentYear: extractedData.assessmentYear || updatedDocument.assessmentYear,
+                  assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
                   description: 'Salary income from Form 16'
                 });
               }
@@ -190,7 +228,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     section,
                     type: `${section} Investment`,
                     amount: amount.toString(),
-                    assessmentYear: extractedData.assessmentYear || updatedDocument.assessmentYear,
+                    assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
                     description: `Deduction under section ${section}`
                   });
                 }
@@ -206,7 +244,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 await storage.createTaxCalculation({
                   userId,
                   documentId,
-                  assessmentYear: extractedData.assessmentYear || updatedDocument.assessmentYear,
+                  assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
                   grossIncome: extractedData.grossSalary.toString(),
                   totalDeductions: comparison.oldRegime.totalDeductions.toString(),
                   taxableIncome: comparison.oldRegime.taxableIncome.toString(),
@@ -235,7 +273,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 for (const suggestion of suggestions) {
                   await storage.createTaxSuggestion({
                     userId,
-                    assessmentYear: extractedData.assessmentYear || updatedDocument.assessmentYear,
+                    assessmentYear: extractedData.assessmentYear || updatedDocument?.assessmentYear || '2024-25',
                     section: suggestion.section,
                     category: suggestion.category,
                     suggestion: suggestion.suggestion,
@@ -254,15 +292,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 processedAt: new Date()
               });
             }
-          });
-
-          stream.on('error', async (error) => {
-            console.error('Error reading PDF stream:', error);
+          } catch (pipelineError) {
+            console.error('Error during PDF download or size validation:', pipelineError);
             await storage.updateTaxDocument(documentId, userId, {
               status: 'failed',
               processedAt: new Date()
             });
-          });
+          }
         } catch (error) {
           console.error('Error processing document:', error);
           await storage.updateTaxDocument(documentId, userId, {

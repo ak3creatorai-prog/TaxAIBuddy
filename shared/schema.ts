@@ -41,7 +41,7 @@ export const taxDocuments = pgTable("tax_documents", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   fileName: varchar("file_name").notNull(),
-  filePath: varchar("file_path").notNull(),
+  filePath: varchar("file_path"), // Optional - set after upload completion for security
   assessmentYear: varchar("assessment_year").notNull(),
   status: varchar("status").notNull().default("processing"), // processing, completed, failed
   extractedData: jsonb("extracted_data"),
