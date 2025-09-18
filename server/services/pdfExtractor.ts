@@ -38,18 +38,27 @@ const ocrSemaphore = new OCRSemaphore();
 
 export interface Form16Data {
   employerName?: string;
+  employerAddress?: string;
   employeeName?: string;
+  employeeAddress?: string;
   pan?: string;
   assessmentYear?: string;
   grossSalary?: number;
+  grossTotalIncome?: number;
+  totalExemption?: number;
+  standardDeduction?: number;
   basicSalary?: number;
   hra?: number;
   otherAllowances?: number;
+  totalDeduction?: number;
+  aggregateDeduction?: number;
+  incomeChargeable?: number;
+  taxableIncome?: number;
+  netTaxPayable?: number;
   tdsDeducted?: number;
   deductions?: {
     [section: string]: number;
   };
-  taxableIncome?: number;
 }
 
 export class PDFExtractorService {
@@ -237,43 +246,271 @@ export class PDFExtractorService {
   private parseForm16Text(text: string): Form16Data {
     const form16Data: Form16Data = {};
     
-    // Extract PAN
-    const panMatch = text.match(/PAN\s*:?\s*([A-Z]{5}\d{4}[A-Z])/i);
-    if (panMatch) {
-      form16Data.pan = panMatch[1].toUpperCase();
-    }
+    // Split text into lines for more precise line-wise parsing
+    const lines = text.split(/\r?\n/).map(line => line.trim());
     
-    // Extract employee name
-    const nameMatch = text.match(/Name\s*:?\s*([A-Za-z\s]+)/i);
-    if (nameMatch) {
-      form16Data.employeeName = nameMatch[1].trim();
-    }
+    // Detect Form 16 sections for better scoping
+    const partBStart = lines.findIndex(line => /^(?:Part\s*)?B\s*[:\-]?/i.test(line) || /^B\s*\(\s*1\s*\)/i.test(line));
+    const chapterVIAStart = lines.findIndex(line => /Chapter\s*VI-A/i.test(line));
     
-    // Extract employer name
-    const employerMatch = text.match(/Employer\s*:?\s*([A-Za-z\s&.,-]+)/i);
-    if (employerMatch) {
-      form16Data.employerName = employerMatch[1].trim();
-    }
-    
-    // Extract assessment year
-    const ayMatch = text.match(/Assessment\s*Year\s*:?\s*(\d{4}-\d{2})/i);
-    if (ayMatch) {
-      form16Data.assessmentYear = ayMatch[1];
-    }
-    
-    // Extract gross salary (various patterns)
-    const grossSalaryPatterns = [
-      /Gross\s*Salary\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /Total\s*Income\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /Annual\s*Salary\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i
+    // Extract PAN - prioritize employee PAN with specific context
+    const employeePanPatterns = [
+      /^PAN\s*(?:of\s*)?(?:Employee|Deductee)\s*[:\-]?\s*([A-Z]{5}\d{4}[A-Z])/i,
+      /^Employee\s*PAN\s*[:\-]?\s*([A-Z]{5}\d{4}[A-Z])/i
     ];
     
-    for (const pattern of grossSalaryPatterns) {
+    // Try employee-specific patterns first
+    for (const line of lines) {
+      for (const pattern of employeePanPatterns) {
+        const match = line.match(pattern);
+        if (match) {
+          form16Data.pan = match[1].toUpperCase();
+          break;
+        }
+      }
+      if (form16Data.pan) break;
+    }
+    
+    // Fallback to general PAN if not found
+    if (!form16Data.pan) {
+      const generalPanPatterns = [
+        /^PAN\s*[:\-]?\s*([A-Z]{5}\d{4}[A-Z])/i,
+        /PAN\s*No\.?\s*[:\-]?\s*([A-Z]{5}\d{4}[A-Z])/i
+      ];
+      
+      for (const line of lines) {
+        for (const pattern of generalPanPatterns) {
+          const match = line.match(pattern);
+          if (match) {
+            form16Data.pan = match[1].toUpperCase();
+            break;
+          }
+        }
+        if (form16Data.pan) break;
+      }
+    }
+    
+    // Extract employee name with context
+    const employeeNamePatterns = [
+      /^(?:Name\s*of\s*)?Employee(?:'s)?\s*Name\s*[:\-]\s*(.+)$/i,
+      /^Employee\s*[:\-]\s*(.+)$/i,
+      /^Name\s*[:\-]\s*(.+)$/i
+    ];
+    
+    for (const line of lines) {
+      for (const pattern of employeeNamePatterns) {
+        const match = line.match(pattern);
+        if (match && match[1].length > 2) {
+          form16Data.employeeName = match[1].trim();
+          break;
+        }
+      }
+      if (form16Data.employeeName) break;
+    }
+    
+    // Extract employee address - capture multiple lines
+    const employeeAddressStart = lines.findIndex(line => 
+      /^(?:Address\s*of\s*)?Employee(?:'s)?\s*Address\s*[:\-]/i.test(line) ||
+      /^(?:Residential\s*)?Address\s*[:\-]/i.test(line)
+    );
+    
+    if (employeeAddressStart !== -1) {
+      const addressLines = [];
+      for (let i = employeeAddressStart; i < lines.length && i < employeeAddressStart + 5; i++) {
+        const line = lines[i];
+        // Stop at next labeled field
+        if (i > employeeAddressStart && /^(?:PAN|TAN|Employer|Assessment|Income)/i.test(line)) {
+          break;
+        }
+        if (i === employeeAddressStart) {
+          // Extract address part after the label
+          const match = line.match(/^(?:Address\s*of\s*)?Employee(?:'s)?\s*Address\s*[:\-]\s*(.+)$/i) ||
+                       line.match(/^(?:Residential\s*)?Address\s*[:\-]\s*(.+)$/i);
+          if (match && match[1].trim()) {
+            addressLines.push(match[1].trim());
+          }
+        } else if (line && !line.match(/^[A-Z\s]+:\s*$/)) {
+          addressLines.push(line);
+        }
+      }
+      if (addressLines.length > 0) {
+        form16Data.employeeAddress = addressLines.join(' ').trim();
+      }
+    }
+    
+    // Extract employer name with specific context
+    const employerNamePatterns = [
+      /^(?:Name\s*of\s*)?Employer(?:'s)?\s*Name\s*[:\-]\s*(.+)$/i,
+      /^Employer\s*[:\-]\s*(.+)$/i,
+      /^Company\s*Name\s*[:\-]\s*(.+)$/i
+    ];
+    
+    for (const line of lines) {
+      for (const pattern of employerNamePatterns) {
+        const match = line.match(pattern);
+        if (match && match[1].length > 2) {
+          form16Data.employerName = match[1].trim();
+          break;
+        }
+      }
+      if (form16Data.employerName) break;
+    }
+    
+    // Extract employer address - capture multiple lines
+    const employerAddressStart = lines.findIndex(line => 
+      /^(?:Address\s*of\s*)?Employer(?:'s)?\s*Address\s*[:\-]/i.test(line) ||
+      /^Company\s*Address\s*[:\-]/i.test(line)
+    );
+    
+    if (employerAddressStart !== -1) {
+      const addressLines = [];
+      for (let i = employerAddressStart; i < lines.length && i < employerAddressStart + 5; i++) {
+        const line = lines[i];
+        // Stop at next labeled field
+        if (i > employerAddressStart && /^(?:Employee|PAN|TAN|Assessment|Income)/i.test(line)) {
+          break;
+        }
+        if (i === employerAddressStart) {
+          // Extract address part after the label
+          const match = line.match(/^(?:Address\s*of\s*)?Employer(?:'s)?\s*Address\s*[:\-]\s*(.+)$/i) ||
+                       line.match(/^Company\s*Address\s*[:\-]\s*(.+)$/i);
+          if (match && match[1].trim()) {
+            addressLines.push(match[1].trim());
+          }
+        } else if (line && !line.match(/^[A-Z\s]+:\s*$/)) {
+          addressLines.push(line);
+        }
+      }
+      if (addressLines.length > 0) {
+        form16Data.employerAddress = addressLines.join(' ').trim();
+      }
+    }
+    
+    // Extract assessment year with more variations
+    const assessmentYearPatterns = [
+      /Assessment\s*Year\s*[:\-]?\s*(\d{4}[\-\s]*\d{2,4})/i,
+      /AY\s*[:\-]?\s*(\d{4}[\-\s]*\d{2,4})/i,
+      /A\.Y\.?\s*[:\-]?\s*(\d{4}[\-\s]*\d{2,4})/i,
+      /Financial\s*Year\s*[:\-]?\s*(\d{4}[\-\s]*\d{2,4})/i
+    ];
+    
+    for (const pattern of assessmentYearPatterns) {
       const match = text.match(pattern);
       if (match) {
-        form16Data.grossSalary = this.parseAmount(match[1]);
+        // Normalize to YYYY-YY format
+        let year = match[1].replace(/\s+/g, '-');
+        if (year.length === 7 && year.includes('-')) {
+          form16Data.assessmentYear = year;
+        } else if (year.length === 9) {
+          // Convert YYYY-YYYY to YYYY-YY
+          const parts = year.split('-');
+          form16Data.assessmentYear = `${parts[0]}-${parts[1].slice(-2)}`;
+        }
         break;
       }
+    }
+    
+    // Helper function to search in specific section with line-scoped patterns
+    const searchInSection = (startIndex: number, endIndex: number, patterns: RegExp[]): string | null => {
+      const sectionLines = startIndex >= 0 ? lines.slice(startIndex, endIndex > 0 ? endIndex : lines.length) : lines;
+      for (const line of sectionLines) {
+        for (const pattern of patterns) {
+          const match = line.match(pattern);
+          if (match && match[1]) {
+            return match[1];
+          }
+        }
+      }
+      return null;
+    };
+    
+    // Extract gross salary with Form 16 specific line-scoped patterns
+    const grossSalaryPatterns = [
+      /^(?:\d+\.?\s*)?(?:Gross\s*)?Salary\s*(?:as\s*per\s*provisions\s*of\s*section\s*17\s*\(1\))?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?(?:Total\s*)?Annual\s*Salary\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Gross\s*Salary\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+    ];
+    
+    const grossSalaryResult = searchInSection(partBStart, chapterVIAStart, grossSalaryPatterns);
+    if (grossSalaryResult) {
+      form16Data.grossSalary = this.parseAmount(grossSalaryResult);
+    }
+    
+    // Extract gross total income with Form 16 specific line-scoped patterns
+    const grossTotalIncomePatterns = [
+      /^(?:\d+\.?\s*)?Gross\s*Total\s*Income\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Total\s*Income\s*(?:from\s*all\s*sources)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Income\s*under\s*the\s*head\s*['""]?Salaries['""]?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+    ];
+    
+    const grossTotalIncomeResult = searchInSection(partBStart, chapterVIAStart, grossTotalIncomePatterns);
+    if (grossTotalIncomeResult) {
+      form16Data.grossTotalIncome = this.parseAmount(grossTotalIncomeResult);
+    }
+    
+    // Extract total exemption with section-scoped line patterns
+    const totalExemptionPatterns = [
+      /^(?:\d+\.?\s*)?(?:Total\s*)?(?:Amount\s*of\s*)?Exemption(?:s)?\s*(?:claimed\s*)?(?:u\/s\s*10)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Exemptions\s*under\s*section\s*10\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+    ];
+    
+    const totalExemptionResult = searchInSection(partBStart, chapterVIAStart, totalExemptionPatterns);
+    if (totalExemptionResult) {
+      form16Data.totalExemption = this.parseAmount(totalExemptionResult);
+    }
+    
+    // Extract standard deduction with specific section references
+    const standardDeductionPatterns = [
+      /^(?:\d+\.?\s*)?(?:Standard\s*)?Deduction\s*(?:u\/s|under\s*section)\s*16\s*\(ia\)\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Section\s*16\s*\(ia\)\s*(?:Standard\s*Deduction)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Standard\s*Deduction\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+    ];
+    
+    const standardDeductionResult = searchInSection(partBStart, chapterVIAStart, standardDeductionPatterns);
+    if (standardDeductionResult) {
+      form16Data.standardDeduction = this.parseAmount(standardDeductionResult);
+    }
+    
+    // Now implement the missing financial field extractions with proper line-scoping
+    
+    // Extract total deduction with Chapter VI-A scoping  
+    const totalDeductionPatterns = [
+      /^(?:\d+\.?\s*)?Total\s*(?:amount\s*of\s*)?deduction(?:s)?\s*(?:under\s*Chapter\s*VI-A)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Total\s*deduction(?:s)?\s*claimed\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+    ];
+    
+    const totalDeductionResult = searchInSection(chapterVIAStart, -1, totalDeductionPatterns);
+    if (totalDeductionResult) {
+      form16Data.totalDeduction = this.parseAmount(totalDeductionResult);
+      // Set as aggregate deduction if not already set
+      if (!form16Data.aggregateDeduction) {
+        form16Data.aggregateDeduction = this.parseAmount(totalDeductionResult);
+      }
+    }
+    
+    // Extract income chargeable under the head 'Salaries' with specific Form 16 patterns
+    const incomeChargeablePatterns = [
+      /^(?:\d+\.?\s*)?Income\s*chargeable\s*under\s*the\s*head\s*['""]?Salaries['""]?\s*(?:\(\d+[-\s]*\d*\))?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?(?:Total\s*)?Income\s*chargeable\s*to\s*tax\s*(?:under\s*salary)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+    ];
+    
+    const incomeChargeableResult = searchInSection(partBStart, chapterVIAStart, incomeChargeablePatterns);
+    if (incomeChargeableResult) {
+      form16Data.incomeChargeable = this.parseAmount(incomeChargeableResult);
+    }
+    
+    // Extract net tax payable with line-scoped patterns in tax computation section
+    const netTaxPayablePatterns = [
+      /^(?:\d+\.?\s*)?(?:Net\s*)?Tax\s*payable\s*(?:\(after\s*TDS\))?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Balance\s*tax\s*payable\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Tax\s*on\s*total\s*income\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Total\s*tax\s*liability\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+    ];
+    
+    // Search in tax computation section (after Chapter VI-A)
+    const netTaxPayableResult = searchInSection(chapterVIAStart >= 0 ? chapterVIAStart : partBStart, -1, netTaxPayablePatterns);
+    if (netTaxPayableResult) {
+      form16Data.netTaxPayable = this.parseAmount(netTaxPayableResult);
     }
     
     // Extract basic salary
@@ -304,7 +541,7 @@ export class PDFExtractorService {
     }
     
     // Extract deductions by sections
-    form16Data.deductions = this.extractDeductions(text);
+    form16Data.deductions = this.extractDeductions(lines, chapterVIAStart);
     
     // Extract taxable income
     const taxableIncomeMatch = text.match(/Taxable\s*Income\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i);
@@ -315,26 +552,32 @@ export class PDFExtractorService {
     return form16Data;
   }
   
-  private extractDeductions(text: string): { [section: string]: number } {
+  private extractDeductions(lines: string[], chapterVIAStart: number): { [section: string]: number } {
     const deductions: { [section: string]: number } = {};
     
-    // Common deduction sections
+    // Only search within Chapter VI-A section (skip HRA/LTA as they are exemptions under section 10)
+    const chapterVIALines = chapterVIAStart >= 0 ? lines.slice(chapterVIAStart) : [];
+    
+    // Chapter VI-A deduction sections only
     const deductionPatterns = [
-      { section: '80C', pattern: /80C\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i },
-      { section: '80D', pattern: /80D\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i },
-      { section: '80G', pattern: /80G\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i },
-      { section: '80E', pattern: /80E\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i },
-      { section: '80CCD', pattern: /80CCD\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i },
-      { section: 'HRA', pattern: /HRA\s*Exemption\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i },
-      { section: 'LTA', pattern: /LTA\s*Exemption\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i }
+      { section: '80C', pattern: /^(?:\d+\.?\s*)?(?:Section\s*)?80C\s*(?:deduction)?\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i },
+      { section: '80D', pattern: /^(?:\d+\.?\s*)?(?:Section\s*)?80D\s*(?:deduction)?\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i },
+      { section: '80G', pattern: /^(?:\d+\.?\s*)?(?:Section\s*)?80G\s*(?:deduction)?\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i },
+      { section: '80E', pattern: /^(?:\d+\.?\s*)?(?:Section\s*)?80E\s*(?:deduction)?\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i },
+      { section: '80CCD', pattern: /^(?:\d+\.?\s*)?(?:Section\s*)?80CCD\s*(?:deduction)?\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i },
+      { section: '80TTA', pattern: /^(?:\d+\.?\s*)?(?:Section\s*)?80TTA\s*(?:deduction)?\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i }
     ];
     
+    // Search within Chapter VI-A lines only
     for (const { section, pattern } of deductionPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        const amount = this.parseAmount(match[1]);
-        if (amount > 0) {
-          deductions[section] = amount;
+      for (const line of chapterVIALines) {
+        const match = line.match(pattern);
+        if (match) {
+          const amount = this.parseAmount(match[1]);
+          if (amount > 0) {
+            deductions[section] = amount;
+            break; // Found this section, move to next
+          }
         }
       }
     }

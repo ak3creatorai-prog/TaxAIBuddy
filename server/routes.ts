@@ -198,7 +198,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // Use safe pipeline for stream handling
             await pipeline(sourceStream, byteLimitTransform, collectTransform);
             const pdfBuffer = Buffer.concat(chunks);
-              const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
+            const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
               
               // Update document with extracted data
               await storage.updateTaxDocument(documentId, userId, {
@@ -299,13 +299,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
               processedAt: new Date()
             });
           }
-        } catch (error) {
-          console.error('Error processing document:', error);
-          await storage.updateTaxDocument(documentId, userId, {
-            status: 'failed',
-            processedAt: new Date()
-          });
-        }
       });
     } catch (error) {
       console.error("Error updating document upload:", error);
