@@ -1,13 +1,17 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
 import { ObjectUploader } from "@/components/ObjectUploader";
+import { TaxCalculator } from "@/components/TaxCalculator";
 import { apiRequest } from "@/lib/queryClient";
 import { 
   Upload as UploadIcon, 
@@ -15,7 +19,17 @@ import {
   CheckCircle, 
   AlertCircle, 
   Clock,
-  Shield 
+  Shield,
+  Plus,
+  Trash2,
+  Calculator,
+  TrendingUp,
+  DollarSign,
+  Home,
+  Briefcase,
+  Edit3,
+  Eye,
+  BarChart3
 } from "lucide-react";
 import type { UploadResult } from "@uppy/core";
 
@@ -26,13 +40,70 @@ interface TaxDocument {
   status: string;
   uploadedAt: string;
   processedAt?: string;
+  extractedData?: {
+    employerName?: string;
+    employeeName?: string;
+    pan?: string;
+    assessmentYear?: string;
+    grossSalary?: number;
+    basicSalary?: number;
+    hra?: number;
+    otherAllowances?: number;
+    tdsDeducted?: number;
+    deductions?: { [section: string]: number };
+    taxableIncome?: number;
+  };
+}
+
+interface IncomeSource {
+  id?: string;
+  source: string;
+  amount: string;
+  description: string;
+}
+
+interface Investment {
+  id?: string;
+  section: string;
+  type: string;
+  amount: string;
+  description: string;
+}
+
+interface AdditionalDeduction {
+  id?: string;
+  section: string;
+  amount: string;
+  description: string;
 }
 
 export default function Upload() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [assessmentYear, setAssessmentYear] = useState(`${new Date().getFullYear()}-${(new Date().getFullYear() + 1).toString().slice(-2)}`);
+  const currentYear = new Date().getFullYear();
+  const defaultAssessmentYear = `${currentYear}-${(currentYear + 1).toString().slice(-2)}`;
+  
+  // Use the same assessment year from localStorage that Dashboard uses
+  const [assessmentYear, setAssessmentYear] = useState(() => {
+    const saved = localStorage.getItem('selectedAssessmentYear');
+    return saved || defaultAssessmentYear;
+  });
+
+  // Update localStorage when assessment year changes
+  const handleAssessmentYearChange = (year: string) => {
+    setAssessmentYear(year);
+    localStorage.setItem('selectedAssessmentYear', year);
+  };
   const [isUploading, setIsUploading] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
+  const [extractedData, setExtractedData] = useState<TaxDocument['extractedData'] | null>(null);
+  const [additionalIncome, setAdditionalIncome] = useState<IncomeSource[]>([]);
+  const [additionalInvestments, setAdditionalInvestments] = useState<Investment[]>([]);
+  const [additionalDeductions, setAdditionalDeductions] = useState<AdditionalDeduction[]>([]);
+  const [currentDocument, setCurrentDocument] = useState<TaxDocument | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [showResults, setShowResults] = useState(false);
+  const [taxResults, setTaxResults] = useState<any>(null);
 
   const createDocumentMutation = useMutation({
     mutationFn: async (data: { fileName: string; assessmentYear: string; filePath: string }) => {
@@ -66,12 +137,16 @@ export default function Upload() {
       });
       return await response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['/api/dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['/api/tax-documents'] });
+      setCurrentDocument(data.document);
+      // Start polling for extracted data
+      pollForExtractedData(data.document.id);
+      setCurrentStep(2);
       toast({
         title: "Upload Successful",
-        description: "Your Form 16 is being processed. You'll see the results in your dashboard shortly.",
+        description: "Your Form 16 is being processed. Results will appear shortly.",
       });
     },
     onError: (error) => {
@@ -127,6 +202,51 @@ export default function Upload() {
     }
   };
 
+  // Poll for extracted data
+  const pollForExtractedData = async (documentId: string) => {
+    const maxAttempts = 30; // 30 attempts with 2-second intervals = 1 minute
+    let attempts = 0;
+    
+    const poll = async () => {
+      try {
+        const response = await apiRequest('GET', `/api/tax-documents/${documentId}`);
+        const document = await response.json();
+        
+        if (document.status === 'completed' && document.extractedData) {
+          setExtractedData(document.extractedData);
+          toast({
+            title: "Processing Complete",
+            description: "Your Form 16 data has been extracted successfully!",
+          });
+          return;
+        } else if (document.status === 'failed') {
+          toast({
+            title: "Processing Failed",
+            description: "Failed to extract data from your Form 16. Please try uploading again.",
+            variant: "destructive",
+          });
+          return;
+        }
+        
+        // Continue polling if still processing
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 2000);
+        } else {
+          toast({
+            title: "Processing Timeout",
+            description: "Processing is taking longer than expected. Please check back later.",
+            variant: "destructive",
+          });
+        }
+      } catch (error) {
+        console.error('Error polling for extracted data:', error);
+      }
+    };
+    
+    poll();
+  };
+
   const handleUploadComplete = async (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
     if (!result.successful || result.successful.length === 0) {
       toast({
@@ -164,6 +284,14 @@ export default function Upload() {
     }
   };
 
+  // Add missing endpoint for fetching single document
+  const fetchDocumentMutation = useMutation({
+    mutationFn: async (documentId: string) => {
+      const response = await apiRequest('GET', `/api/tax-documents/${documentId}`);
+      return await response.json();
+    }
+  });
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'completed':
@@ -190,202 +318,779 @@ export default function Upload() {
     }
   };
 
+  // Helper functions for managing additional data
+  const addIncomeSource = () => {
+    setAdditionalIncome([...additionalIncome, { source: '', amount: '', description: '' }]);
+  };
+
+  const removeIncomeSource = (index: number) => {
+    setAdditionalIncome(additionalIncome.filter((_, i) => i !== index));
+  };
+
+  const updateIncomeSource = (index: number, field: keyof IncomeSource, value: string) => {
+    const updated = [...additionalIncome];
+    updated[index] = { ...updated[index], [field]: value };
+    setAdditionalIncome(updated);
+  };
+
+  const addInvestment = () => {
+    setAdditionalInvestments([...additionalInvestments, { section: '', type: '', amount: '', description: '' }]);
+  };
+
+  const removeInvestment = (index: number) => {
+    setAdditionalInvestments(additionalInvestments.filter((_, i) => i !== index));
+  };
+
+  const updateInvestment = (index: number, field: keyof Investment, value: string) => {
+    const updated = [...additionalInvestments];
+    updated[index] = { ...updated[index], [field]: value };
+    setAdditionalInvestments(updated);
+  };
+
+  const addDeduction = () => {
+    setAdditionalDeductions([...additionalDeductions, { section: '', amount: '', description: '' }]);
+  };
+
+  const removeDeduction = (index: number) => {
+    setAdditionalDeductions(additionalDeductions.filter((_, i) => i !== index));
+  };
+
+  const updateDeduction = (index: number, field: keyof AdditionalDeduction, value: string) => {
+    const updated = [...additionalDeductions];
+    updated[index] = { ...updated[index], [field]: value };
+    setAdditionalDeductions(updated);
+  };
+
+  // Handle tax analysis
+  const handleAnalyze = async () => {
+    if (!extractedData) {
+      toast({
+        title: "No Data Available",
+        description: "Please upload and process a Form 16 first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsAnalyzing(true);
+    try {
+      // Calculate total income
+      const totalAdditionalIncome = additionalIncome.reduce((sum, income) => 
+        sum + (parseFloat(income.amount) || 0), 0
+      );
+      const grossIncome = (extractedData.grossSalary || 0) + totalAdditionalIncome;
+
+      // Calculate total deductions
+      const extractedDeductions = extractedData.deductions || {};
+      const additionalDeductionsMap = additionalDeductions.reduce((acc, ded) => {
+        if (ded.section && ded.amount) {
+          acc[ded.section] = (parseFloat(ded.amount) || 0);
+        }
+        return acc;
+      }, {} as Record<string, number>);
+      
+      const investmentDeductions = additionalInvestments.reduce((acc, inv) => {
+        if (inv.section && inv.amount) {
+          acc[inv.section] = (acc[inv.section] || 0) + (parseFloat(inv.amount) || 0);
+        }
+        return acc;
+      }, {} as Record<string, number>);
+
+      const allDeductions = { ...extractedDeductions, ...additionalDeductionsMap, ...investmentDeductions };
+
+      // Call tax calculation API
+      const response = await fetch('/api/tax-calculations/compare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          grossIncome: grossIncome.toString(),
+          deductions: allDeductions,
+          assessmentYear
+        })
+      });
+
+      if (response.ok) {
+        const results = await response.json();
+        setTaxResults(results);
+        setShowResults(true);
+        setCurrentStep(4);
+        queryClient.invalidateQueries({ queryKey: ['/api/dashboard'] });
+        toast({
+          title: "Analysis Complete",
+          description: "Your tax analysis has been calculated successfully!",
+        });
+      } else {
+        throw new Error('Failed to calculate tax');
+      }
+    } catch (error) {
+      console.error('Analysis error:', error);
+      toast({
+        title: "Analysis Failed",
+        description: "Failed to analyze your tax data. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency',
+      currency: 'INR',
+      maximumFractionDigits: 0
+    }).format(amount);
+  };
+
+  const incomeSourceOptions = [
+    { value: 'salary', label: 'Additional Salary' },
+    { value: 'rental', label: 'Rental Income' },
+    { value: 'business', label: 'Business Income' },
+    { value: 'capital_gains', label: 'Capital Gains' },
+    { value: 'other', label: 'Other Income' }
+  ];
+
+  const investmentSections = [
+    { value: '80C', label: 'Section 80C (ELSS, PPF, NSC)' },
+    { value: '80D', label: 'Section 80D (Health Insurance)' },
+    { value: '80G', label: 'Section 80G (Donations)' },
+    { value: '80E', label: 'Section 80E (Education Loan)' },
+    { value: '80CCD1B', label: 'Section 80CCD(1B) (NPS)' },
+    { value: 'HRA', label: 'HRA Exemption' }
+  ];
+
   return (
-    <div className="space-y-8" data-testid="upload-main">
-      {/* Page Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-foreground mb-2" data-testid="heading-upload">
-          Upload Form 16
+    <div className="max-w-7xl mx-auto p-6 space-y-8" data-testid="upload-main">
+      {/* Page Header with Progress */}
+      <div className="text-center">
+        <h1 className="text-4xl font-bold text-foreground mb-4" data-testid="heading-upload">
+          Smart Tax Analysis
         </h1>
-        <p className="text-muted-foreground">
-          Upload your Form 16 PDF to automatically extract tax information and calculate your liabilities.
+        <p className="text-lg text-muted-foreground mb-6">
+          Upload your Form 16, review extracted data, add additional information, and get comprehensive tax analysis
         </p>
-      </div>
-
-      {/* Upload Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2">
-          <Card data-testid="card-upload-form">
-            <CardHeader>
-              <CardTitle className="flex items-center space-x-2">
-                <UploadIcon className="h-5 w-5" />
-                <span>Upload Document</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              {/* Assessment Year Selection */}
-              <div>
-                <Label htmlFor="assessment-year">Assessment Year</Label>
-                <Input
-                  id="assessment-year"
-                  data-testid="input-assessment-year"
-                  value={assessmentYear}
-                  onChange={(e) => setAssessmentYear(e.target.value)}
-                  placeholder="e.g., 2024-25"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Enter the assessment year for this Form 16
-                </p>
-              </div>
-
-              {/* File Upload */}
-              <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
-                <ObjectUploader
-                  maxNumberOfFiles={1}
-                  maxFileSize={10485760} // 10MB
-                  onGetUploadParameters={handleGetUploadParameters}
-                  onComplete={handleUploadComplete}
-                  buttonClassName="bg-primary text-primary-foreground hover:bg-primary/90"
-                >
-                  <div className="flex flex-col items-center space-y-4">
-                    <div className="bg-primary/10 p-4 rounded-full">
-                      <UploadIcon className="h-8 w-8 text-primary" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-medium">Choose Form 16 PDF</h3>
-                      <p className="text-muted-foreground mt-1">
-                        Click to browse or drag and drop your file here
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Maximum file size: 10MB • Supported format: PDF only
-                      </p>
-                    </div>
-                  </div>
-                </ObjectUploader>
-
-                {isUploading && (
-                  <div className="mt-4 p-4 bg-muted/50 rounded-lg">
-                    <div className="flex items-center justify-center space-x-2">
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary"></div>
-                      <span className="text-sm text-muted-foreground">Processing upload...</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Information Panel */}
-        <div className="space-y-6">
-          {/* Security Notice */}
-          <Card data-testid="card-security-notice">
-            <CardHeader>
-              <CardTitle className="flex items-center space-x-2">
-                <Shield className="h-5 w-5 text-secondary" />
-                <span>Security & Privacy</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-3 text-sm">
-                <div className="flex items-start space-x-2">
-                  <div className="w-2 h-2 bg-secondary rounded-full mt-2"></div>
-                  <span className="text-muted-foreground">
-                    Your documents are encrypted during upload and storage
-                  </span>
-                </div>
-                <div className="flex items-start space-x-2">
-                  <div className="w-2 h-2 bg-secondary rounded-full mt-2"></div>
-                  <span className="text-muted-foreground">
-                    Only you can access your tax documents and data
-                  </span>
-                </div>
-                <div className="flex items-start space-x-2">
-                  <div className="w-2 h-2 bg-secondary rounded-full mt-2"></div>
-                  <span className="text-muted-foreground">
-                    We never share your information with third parties
-                  </span>
-                </div>
-                <div className="flex items-start space-x-2">
-                  <div className="w-2 h-2 bg-secondary rounded-full mt-2"></div>
-                  <span className="text-muted-foreground">
-                    Documents are automatically processed using AI
-                  </span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* What We Extract */}
-          <Card data-testid="card-extraction-info">
-            <CardHeader>
-              <CardTitle>What We Extract</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3 text-sm">
-                <div className="flex items-center space-x-2">
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                  <span>Basic salary and allowances</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                  <span>Tax deducted at source (TDS)</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                  <span>Section 80C, 80D deductions</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                  <span>HRA and other exemptions</span>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                  <span>PAN and employer details</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Processing Time */}
-          <Card data-testid="card-processing-time">
-            <CardHeader>
-              <CardTitle>Processing Time</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center">
-                <div className="bg-primary/10 p-3 rounded-full w-fit mx-auto mb-3">
-                  <Clock className="h-6 w-6 text-primary" />
-                </div>
-                <p className="font-semibold">Usually under 2 minutes</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Most documents are processed automatically within seconds
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+        
+        {/* Progress Indicator */}
+        <div className="flex items-center justify-center space-x-4 mb-8">
+          <div className={`flex items-center space-x-2 px-4 py-2 rounded-full ${
+            currentStep >= 1 ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+          }`}>
+            <UploadIcon className="h-4 w-4" />
+            <span className="font-medium">Upload</span>
+          </div>
+          <div className={`w-8 h-0.5 ${
+            currentStep >= 2 ? 'bg-primary' : 'bg-muted'
+          }`}></div>
+          <div className={`flex items-center space-x-2 px-4 py-2 rounded-full ${
+            currentStep >= 2 ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+          }`}>
+            <Eye className="h-4 w-4" />
+            <span className="font-medium">Review</span>
+          </div>
+          <div className={`w-8 h-0.5 ${
+            currentStep >= 3 ? 'bg-primary' : 'bg-muted'
+          }`}></div>
+          <div className={`flex items-center space-x-2 px-4 py-2 rounded-full ${
+            currentStep >= 3 ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+          }`}>
+            <Edit3 className="h-4 w-4" />
+            <span className="font-medium">Add Details</span>
+          </div>
+          <div className={`w-8 h-0.5 ${
+            currentStep >= 4 ? 'bg-primary' : 'bg-muted'
+          }`}></div>
+          <div className={`flex items-center space-x-2 px-4 py-2 rounded-full ${
+            currentStep >= 4 ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+          }`}>
+            <BarChart3 className="h-4 w-4" />
+            <span className="font-medium">Results</span>
+          </div>
         </div>
       </div>
 
-      {/* Upload Instructions */}
-      <Card data-testid="card-upload-tips">
-        <CardHeader>
-          <CardTitle>Tips for Best Results</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <h4 className="font-medium mb-2">Document Quality</h4>
-              <ul className="text-sm text-muted-foreground space-y-1">
-                <li>• Use the original PDF from your employer</li>
-                <li>• Both text-based and scanned/image PDFs are supported</li>
-                <li>• Ensure all text is clearly readable for best accuracy</li>
-                <li>• Check that all pages are included</li>
-              </ul>
+      <Tabs value={currentStep.toString()} className="space-y-6">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="1" disabled={currentStep < 1}>Upload Form 16</TabsTrigger>
+          <TabsTrigger value="2" disabled={currentStep < 2}>Review Data</TabsTrigger>
+          <TabsTrigger value="3" disabled={currentStep < 3}>Add Details</TabsTrigger>
+          <TabsTrigger value="4" disabled={currentStep < 4}>Tax Analysis</TabsTrigger>
+        </TabsList>
+
+        {/* Step 1: Upload Form 16 */}
+        <TabsContent value="1" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div className="lg:col-span-2">
+              <Card data-testid="card-upload-form">
+                <CardHeader>
+                  <CardTitle className="flex items-center space-x-2">
+                    <UploadIcon className="h-5 w-5" />
+                    <span>Upload Your Form 16</span>
+                  </CardTitle>
+                  <CardDescription>
+                    Upload your PDF document and we'll automatically extract all the tax information
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  {/* Assessment Year Selection */}
+                  <div>
+                    <Label htmlFor="assessment-year">Assessment Year</Label>
+                    <Select value={assessmentYear} onValueChange={handleAssessmentYearChange}>
+                      <SelectTrigger data-testid="select-assessment-year">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="2024-25">2024-25</SelectItem>
+                        <SelectItem value="2023-24">2023-24</SelectItem>
+                        <SelectItem value="2022-23">2022-23</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* File Upload */}
+                  <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/50 transition-colors">
+                    <ObjectUploader
+                      maxNumberOfFiles={1}
+                      maxFileSize={10485760} // 10MB
+                      onGetUploadParameters={handleGetUploadParameters}
+                      onComplete={handleUploadComplete}
+                      buttonClassName="bg-primary text-primary-foreground hover:bg-primary/90 px-8 py-6 text-lg"
+                    >
+                      <div className="flex flex-col items-center space-y-6">
+                        <div className="bg-gradient-to-br from-primary/20 to-primary/10 p-6 rounded-full">
+                          <UploadIcon className="h-12 w-12 text-primary" />
+                        </div>
+                        <div>
+                          <h3 className="text-xl font-semibold mb-2">Choose Form 16 PDF</h3>
+                          <p className="text-muted-foreground text-lg mb-3">
+                            Drag and drop your file here, or click to browse
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            Supports both text-based and scanned PDFs • Maximum size: 10MB
+                          </p>
+                        </div>
+                      </div>
+                    </ObjectUploader>
+
+                    {isUploading && (
+                      <div className="mt-6 p-6 bg-muted/50 rounded-lg">
+                        <div className="flex items-center justify-center space-x-3">
+                          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
+                          <span className="text-lg text-muted-foreground">Processing your document...</span>
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-2">This usually takes 1-2 minutes</p>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
             </div>
-            
-            <div>
-              <h4 className="font-medium mb-2">Common Issues</h4>
-              <ul className="text-sm text-muted-foreground space-y-1">
-                <li>• Password-protected PDFs may not process</li>
-                <li>• Very old format documents might need manual entry</li>
-                <li>• Corrupted files will fail processing</li>
-                <li>• Non-standard Form 16 formats may have limited extraction</li>
-              </ul>
+
+            {/* Information Panel */}
+            <div className="space-y-6">
+              {/* Security Notice */}
+              <Card data-testid="card-security-notice" className="border-l-4 border-l-green-500">
+                <CardHeader>
+                  <CardTitle className="flex items-center space-x-2">
+                    <Shield className="h-5 w-5 text-green-600" />
+                    <span>Bank-Level Security</span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex items-start space-x-2">
+                      <CheckCircle className="h-4 w-4 text-green-600 mt-0.5" />
+                      <span>End-to-end encryption</span>
+                    </div>
+                    <div className="flex items-start space-x-2">
+                      <CheckCircle className="h-4 w-4 text-green-600 mt-0.5" />
+                      <span>Private data processing</span>
+                    </div>
+                    <div className="flex items-start space-x-2">
+                      <CheckCircle className="h-4 w-4 text-green-600 mt-0.5" />
+                      <span>No data sharing with third parties</span>
+                    </div>
+                    <div className="flex items-start space-x-2">
+                      <CheckCircle className="h-4 w-4 text-green-600 mt-0.5" />
+                      <span>AI-powered extraction</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* What We Extract */}
+              <Card data-testid="card-extraction-info">
+                <CardHeader>
+                  <CardTitle className="flex items-center space-x-2">
+                    <FileText className="h-5 w-5 text-primary" />
+                    <span>Automatic Data Extraction</span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 gap-3 text-sm">
+                    <div className="flex items-center space-x-2">
+                      <div className="w-2 h-2 bg-primary rounded-full"></div>
+                      <span>Employee & employer details</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <div className="w-2 h-2 bg-primary rounded-full"></div>
+                      <span>Gross salary breakdown</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <div className="w-2 h-2 bg-primary rounded-full"></div>
+                      <span>Tax deductions (TDS)</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <div className="w-2 h-2 bg-primary rounded-full"></div>
+                      <span>Investment deductions (80C, 80D, etc.)</span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <div className="w-2 h-2 bg-primary rounded-full"></div>
+                      <span>HRA and other exemptions</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Processing Info */}
+              <Card data-testid="card-processing-time" className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/20">
+                <CardContent className="pt-6">
+                  <div className="text-center">
+                    <div className="bg-blue-100 dark:bg-blue-900/50 p-4 rounded-full w-fit mx-auto mb-4">
+                      <Clock className="h-8 w-8 text-blue-600" />
+                    </div>
+                    <h3 className="font-semibold text-lg mb-2">Quick Processing</h3>
+                    <p className="text-muted-foreground">
+                      Most Form 16 documents are processed in under 2 minutes
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
             </div>
           </div>
-        </CardContent>
-      </Card>
+        </TabsContent>
+
+        {/* Step 2: Review Extracted Data */}
+        <TabsContent value="2" className="space-y-6">
+          {extractedData ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Employee Information */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center space-x-2">
+                    <Briefcase className="h-5 w-5" />
+                    <span>Employee Information</span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Employee Name</Label>
+                      <p className="font-medium">{extractedData.employeeName || 'Not found'}</p>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">PAN</Label>
+                      <p className="font-medium">{extractedData.pan || 'Not found'}</p>
+                    </div>
+                    <div className="col-span-2">
+                      <Label className="text-xs text-muted-foreground">Employer</Label>
+                      <p className="font-medium">{extractedData.employerName || 'Not found'}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Income Information */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center space-x-2">
+                    <DollarSign className="h-5 w-5" />
+                    <span>Income Details</span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Gross Salary</Label>
+                      <p className="font-medium text-lg">{extractedData.grossSalary ? formatCurrency(extractedData.grossSalary) : 'Not found'}</p>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">Basic Salary</Label>
+                      <p className="font-medium">{extractedData.basicSalary ? formatCurrency(extractedData.basicSalary) : 'Not found'}</p>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">HRA</Label>
+                      <p className="font-medium">{extractedData.hra ? formatCurrency(extractedData.hra) : 'Not found'}</p>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground">TDS Deducted</Label>
+                      <p className="font-medium">{extractedData.tdsDeducted ? formatCurrency(extractedData.tdsDeducted) : 'Not found'}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Deductions */}
+              {extractedData.deductions && Object.keys(extractedData.deductions).length > 0 && (
+                <Card className="lg:col-span-2">
+                  <CardHeader>
+                    <CardTitle className="flex items-center space-x-2">
+                      <Calculator className="h-5 w-5" />
+                      <span>Extracted Deductions</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      {Object.entries(extractedData.deductions).map(([section, amount]) => (
+                        <div key={section} className="text-center p-3 bg-muted/50 rounded-lg">
+                          <p className="text-xs text-muted-foreground">Section {section}</p>
+                          <p className="font-semibold">{formatCurrency(amount)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              <div className="lg:col-span-2 text-center pt-6">
+                <Button 
+                  onClick={() => setCurrentStep(3)} 
+                  size="lg" 
+                  className="px-8"
+                  data-testid="button-proceed-to-add-details"
+                >
+                  <Plus className="h-5 w-5 mr-2" />
+                  Add Additional Information
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+                <h3 className="text-lg font-semibold mb-2">Processing Your Document</h3>
+                <p className="text-muted-foreground">Please wait while we extract data from your Form 16...</p>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+
+        {/* Step 3: Add Additional Information */}
+        <TabsContent value="3" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Additional Income Sources */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <TrendingUp className="h-5 w-5" />
+                    <span>Additional Income</span>
+                  </div>
+                  <Button size="sm" onClick={addIncomeSource} data-testid="button-add-income">
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {additionalIncome.map((income, index) => (
+                  <div key={index} className="space-y-2 p-3 border rounded-lg">
+                    <div className="flex justify-between items-center">
+                      <Label className="text-sm font-medium">Income Source {index + 1}</Label>
+                      <Button size="sm" variant="ghost" onClick={() => removeIncomeSource(index)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <Select value={income.source} onValueChange={(value) => updateIncomeSource(index, 'source', value)}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select source" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {incomeSourceOptions.map(option => (
+                          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      type="number"
+                      placeholder="Amount"
+                      value={income.amount}
+                      onChange={(e) => updateIncomeSource(index, 'amount', e.target.value)}
+                    />
+                    <Input
+                      placeholder="Description (optional)"
+                      value={income.description}
+                      onChange={(e) => updateIncomeSource(index, 'description', e.target.value)}
+                    />
+                  </div>
+                ))}
+                {additionalIncome.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    No additional income sources added
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Additional Investments */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Calculator className="h-5 w-5" />
+                    <span>Additional Investments</span>
+                  </div>
+                  <Button size="sm" onClick={addInvestment} data-testid="button-add-investment">
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {additionalInvestments.map((investment, index) => (
+                  <div key={index} className="space-y-2 p-3 border rounded-lg">
+                    <div className="flex justify-between items-center">
+                      <Label className="text-sm font-medium">Investment {index + 1}</Label>
+                      <Button size="sm" variant="ghost" onClick={() => removeInvestment(index)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <Select value={investment.section} onValueChange={(value) => updateInvestment(index, 'section', value)}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select section" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {investmentSections.map(section => (
+                          <SelectItem key={section.value} value={section.value}>{section.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      placeholder="Investment type"
+                      value={investment.type}
+                      onChange={(e) => updateInvestment(index, 'type', e.target.value)}
+                    />
+                    <Input
+                      type="number"
+                      placeholder="Amount"
+                      value={investment.amount}
+                      onChange={(e) => updateInvestment(index, 'amount', e.target.value)}
+                    />
+                    <Input
+                      placeholder="Description (optional)"
+                      value={investment.description}
+                      onChange={(e) => updateInvestment(index, 'description', e.target.value)}
+                    />
+                  </div>
+                ))}
+                {additionalInvestments.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    No additional investments added
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Additional Deductions */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Home className="h-5 w-5" />
+                    <span>Other Deductions</span>
+                  </div>
+                  <Button size="sm" onClick={addDeduction} data-testid="button-add-deduction">
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {additionalDeductions.map((deduction, index) => (
+                  <div key={index} className="space-y-2 p-3 border rounded-lg">
+                    <div className="flex justify-between items-center">
+                      <Label className="text-sm font-medium">Deduction {index + 1}</Label>
+                      <Button size="sm" variant="ghost" onClick={() => removeDeduction(index)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <Input
+                      placeholder="Section (e.g., 24B, 80TTA)"
+                      value={deduction.section}
+                      onChange={(e) => updateDeduction(index, 'section', e.target.value)}
+                    />
+                    <Input
+                      type="number"
+                      placeholder="Amount"
+                      value={deduction.amount}
+                      onChange={(e) => updateDeduction(index, 'amount', e.target.value)}
+                    />
+                    <Input
+                      placeholder="Description"
+                      value={deduction.description}
+                      onChange={(e) => updateDeduction(index, 'description', e.target.value)}
+                    />
+                  </div>
+                ))}
+                {additionalDeductions.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    No additional deductions added
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Analyze Button */}
+          <Card>
+            <CardContent className="pt-6">
+              <div className="text-center">
+                <Button 
+                  onClick={handleAnalyze} 
+                  size="lg" 
+                  className="px-12 py-6 text-lg"
+                  disabled={isAnalyzing || !extractedData}
+                  data-testid="button-analyze-tax"
+                >
+                  {isAnalyzing ? (
+                    <>
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-3"></div>
+                      Analyzing...
+                    </>
+                  ) : (
+                    <>
+                      <BarChart3 className="h-6 w-6 mr-3" />
+                      Analyze Tax Liability
+                    </>
+                  )}
+                </Button>
+                <p className="text-sm text-muted-foreground mt-3">
+                  Generate comprehensive tax analysis comparing old vs new regime
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Step 4: Tax Analysis Results */}
+        <TabsContent value="4" className="space-y-6">
+          {taxResults && (
+            <div className="space-y-6">
+              {/* Results Summary */}
+              <Card className="bg-gradient-to-br from-green-50 to-blue-50 dark:from-green-950/20 dark:to-blue-950/20">
+                <CardHeader>
+                  <CardTitle className="text-center text-2xl">
+                    Tax Analysis Complete! 🎉
+                  </CardTitle>
+                  <CardDescription className="text-center text-lg">
+                    Here's your comprehensive tax comparison for {assessmentYear}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+                    <div className="space-y-2">
+                      <h3 className="text-lg font-semibold">Recommended Regime</h3>
+                      <Badge className={`text-lg px-4 py-2 ${
+                        taxResults.recommendedRegime === 'new' ? 'bg-blue-500' : 'bg-orange-500'
+                      }`}>
+                        {taxResults.recommendedRegime === 'new' ? 'New Tax Regime' : 'Old Tax Regime'}
+                      </Badge>
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-lg font-semibold">Potential Savings</h3>
+                      <p className="text-2xl font-bold text-green-600">
+                        {formatCurrency(Math.abs(taxResults.savings))}
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-lg font-semibold">Effective Tax Rate</h3>
+                      <p className="text-2xl font-bold">
+                        {taxResults.recommendedRegime === 'new' 
+                          ? taxResults.newRegime.effectiveRate.toFixed(2)
+                          : taxResults.oldRegime.effectiveRate.toFixed(2)
+                        }%
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Detailed Comparison */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <Card className="border-orange-200 dark:border-orange-800">
+                  <CardHeader>
+                    <CardTitle className="flex items-center space-x-2">
+                      <div className="w-4 h-4 bg-orange-500 rounded-full"></div>
+                      <span>Old Tax Regime</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <Label className="text-muted-foreground">Gross Income</Label>
+                        <p className="font-semibold">{formatCurrency(taxResults.oldRegime.grossIncome)}</p>
+                      </div>
+                      <div>
+                        <Label className="text-muted-foreground">Total Deductions</Label>
+                        <p className="font-semibold">{formatCurrency(taxResults.oldRegime.totalDeductions)}</p>
+                      </div>
+                      <div>
+                        <Label className="text-muted-foreground">Taxable Income</Label>
+                        <p className="font-semibold">{formatCurrency(taxResults.oldRegime.taxableIncome)}</p>
+                      </div>
+                      <div>
+                        <Label className="text-muted-foreground">Tax + Cess</Label>
+                        <p className="font-semibold text-lg">{formatCurrency(taxResults.oldRegime.totalTax)}</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-blue-200 dark:border-blue-800">
+                  <CardHeader>
+                    <CardTitle className="flex items-center space-x-2">
+                      <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
+                      <span>New Tax Regime</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <Label className="text-muted-foreground">Gross Income</Label>
+                        <p className="font-semibold">{formatCurrency(taxResults.newRegime.grossIncome)}</p>
+                      </div>
+                      <div>
+                        <Label className="text-muted-foreground">Standard Deduction</Label>
+                        <p className="font-semibold">{formatCurrency(taxResults.newRegime.totalDeductions)}</p>
+                      </div>
+                      <div>
+                        <Label className="text-muted-foreground">Taxable Income</Label>
+                        <p className="font-semibold">{formatCurrency(taxResults.newRegime.taxableIncome)}</p>
+                      </div>
+                      <div>
+                        <Label className="text-muted-foreground">Tax + Cess</Label>
+                        <p className="font-semibold text-lg">{formatCurrency(taxResults.newRegime.totalTax)}</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Navigation */}
+              <div className="text-center space-y-4">
+                <p className="text-muted-foreground">
+                  Your tax analysis has been saved to your dashboard for future reference
+                </p>
+                <div className="space-x-4">
+                  <Button variant="outline" onClick={() => { setCurrentStep(1); setExtractedData(null); setShowResults(false); }}>
+                    Analyze Another Form 16
+                  </Button>
+                  <Button onClick={() => window.location.href = '/'}>
+                    View Dashboard
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -4,6 +4,8 @@ import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { isUnauthorizedError } from "@/lib/authUtils";
 import { 
@@ -14,7 +16,8 @@ import {
   PiggyBank, 
   DollarSign,
   Lightbulb,
-  ArrowUpRight
+  ArrowUpRight,
+  Calendar
 } from "lucide-react";
 
 interface DashboardData {
@@ -38,6 +41,20 @@ interface DashboardStats {
 export default function Dashboard() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  const currentYear = new Date().getFullYear();
+  const defaultAssessmentYear = `${currentYear}-${(currentYear + 1).toString().slice(-2)}`;
+  
+  // Persist assessment year selection in localStorage
+  const [selectedAssessmentYear, setSelectedAssessmentYear] = useState(() => {
+    const saved = localStorage.getItem('selectedAssessmentYear');
+    return saved || defaultAssessmentYear;
+  });
+
+  // Update localStorage when assessment year changes
+  const handleAssessmentYearChange = (year: string) => {
+    setSelectedAssessmentYear(year);
+    localStorage.setItem('selectedAssessmentYear', year);
+  };
   const [stats, setStats] = useState<DashboardStats>({
     totalIncome: 0,
     totalDeductions: 0,
@@ -48,9 +65,25 @@ export default function Dashboard() {
   });
 
   const { data: dashboardData, isLoading, error } = useQuery<DashboardData>({
-    queryKey: ['/api/dashboard'],
+    queryKey: ['/api/dashboard', selectedAssessmentYear],
+    queryFn: async () => {
+      const response = await fetch(`/api/dashboard?assessmentYear=${encodeURIComponent(selectedAssessmentYear)}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch dashboard data');
+      }
+      return response.json();
+    },
     retry: false,
   });
+
+  // Generate assessment year options
+  const assessmentYearOptions = [
+    `${currentYear}-${(currentYear + 1).toString().slice(-2)}`,
+    `${currentYear - 1}-${currentYear.toString().slice(-2)}`,
+    `${currentYear - 2}-${(currentYear - 1).toString().slice(-2)}`,
+    `${currentYear - 3}-${(currentYear - 2).toString().slice(-2)}`,
+    `${currentYear - 4}-${(currentYear - 3).toString().slice(-2)}`
+  ];
 
   const handleUploadClick = () => {
     setLocation('/upload');
@@ -134,14 +167,37 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8" data-testid="dashboard-main">
-      {/* Welcome Section */}
-      <div>
-        <h1 className="text-3xl font-bold text-foreground mb-2" data-testid="heading-welcome">
-          Tax Dashboard
-        </h1>
-        <p className="text-muted-foreground" data-testid="text-assessment-year">
-          Assessment Year {dashboardData?.assessmentYear || '2024-25'}
-        </p>
+      {/* Header with Assessment Year Filter */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between space-y-4 md:space-y-0">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground mb-2" data-testid="heading-welcome">
+            Tax Dashboard
+          </h1>
+          <p className="text-muted-foreground">
+            Your comprehensive tax analysis and planning center
+          </p>
+        </div>
+        <div className="flex items-center space-x-3">
+          <Calendar className="h-5 w-5 text-muted-foreground" />
+          <div className="space-y-1">
+            <Label htmlFor="assessment-year" className="text-sm font-medium">
+              Assessment Year
+            </Label>
+            <Select 
+              value={selectedAssessmentYear} 
+              onValueChange={handleAssessmentYearChange}
+            >
+              <SelectTrigger className="w-32" data-testid="select-dashboard-year">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {assessmentYearOptions.map(year => (
+                  <SelectItem key={year} value={year}>{year}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
       </div>
 
       {/* Quick Stats */}

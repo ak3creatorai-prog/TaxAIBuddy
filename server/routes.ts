@@ -33,7 +33,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const userId = req.user.claims.sub;
       const currentYear = new Date().getFullYear();
-      const assessmentYear = `${currentYear}-${(currentYear + 1).toString().slice(-2)}`;
+      const defaultAssessmentYear = `${currentYear}-${(currentYear + 1).toString().slice(-2)}`;
+      
+      // Get assessment year from query params, fallback to default
+      const assessmentYear = req.query.assessmentYear as string || defaultAssessmentYear;
       
       const [documents, incomeSources, investments, calculations, suggestions] = await Promise.all([
         storage.getTaxDocumentsByUser(userId),
@@ -43,11 +46,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         storage.getTaxSuggestionsByUser(userId, assessmentYear)
       ]);
 
+      // Filter documents and calculations by assessment year for consistency
+      const filteredDocuments = documents.filter(doc => doc.assessmentYear === assessmentYear);
+      const filteredCalculations = calculations.filter(calc => calc.assessmentYear === assessmentYear);
+
       res.json({
-        documents,
+        documents: filteredDocuments,
         incomeSources,
         investments,
-        calculations,
+        calculations: filteredCalculations,
         suggestions,
         assessmentYear
       });
@@ -99,135 +106,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/tax-documents', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;
-      const validatedData = insertTaxDocumentSchema.parse({ ...req.body, userId });
+      // Remove filePath from client data for security - it will be set in upload-complete
+      const { filePath, ...cleanData } = req.body;
+      const validatedData = insertTaxDocumentSchema.parse({ ...cleanData, userId });
       
       const document = await storage.createTaxDocument(validatedData);
       
-      // Process the PDF if file path is provided
-      if (document.filePath) {
-        // This would be triggered after successful upload
-        res.json({ document, message: "Document uploaded successfully. Processing..." });
-        
-        // Process PDF in background
-        setImmediate(async () => {
-          try {
-            const objectStorageService = new ObjectStorageService();
-            const objectFile = await objectStorageService.getObjectEntityFile(document.filePath);
-            
-            // Download and process PDF
-            const chunks: Buffer[] = [];
-            const stream = objectFile.createReadStream();
-            
-            stream.on('data', (chunk) => chunks.push(chunk));
-            stream.on('end', async () => {
-              const pdfBuffer = Buffer.concat(chunks);
-              const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
-              
-              // Update document with extracted data
-              await storage.updateTaxDocument(document.id, userId, {
-                extractedData,
-                status: 'completed',
-                processedAt: new Date()
-              });
-
-              // Create income sources and investments from extracted data
-              if (extractedData.grossSalary) {
-                await storage.createIncomeSource({
-                  userId,
-                  documentId: document.id,
-                  source: 'salary',
-                  amount: extractedData.grossSalary.toString(),
-                  assessmentYear: extractedData.assessmentYear || document.assessmentYear,
-                  description: 'Salary income from Form 16'
-                });
-              }
-
-              // Create investments from deductions
-              if (extractedData.deductions) {
-                for (const [section, amount] of Object.entries(extractedData.deductions)) {
-                  await storage.createInvestment({
-                    userId,
-                    documentId: document.id,
-                    section,
-                    type: `${section} Investment`,
-                    amount: amount.toString(),
-                    assessmentYear: extractedData.assessmentYear || document.assessmentYear,
-                    description: `Deduction under section ${section}`
-                  });
-                }
-              }
-
-              // Calculate taxes
-              if (extractedData.grossSalary) {
-                const comparison = taxCalculator.compareRegimes(
-                  extractedData.grossSalary,
-                  extractedData.deductions || {}
-                );
-
-                await storage.createTaxCalculation({
-                  userId,
-                  documentId: document.id,
-                  assessmentYear: extractedData.assessmentYear || document.assessmentYear,
-                  grossIncome: extractedData.grossSalary.toString(),
-                  totalDeductions: comparison.oldRegime.totalDeductions.toString(),
-                  taxableIncome: comparison.oldRegime.taxableIncome.toString(),
-                  oldRegimeTax: comparison.oldRegime.totalTax.toString(),
-                  newRegimeTax: comparison.newRegime.totalTax.toString(),
-                  tdsDeducted: extractedData.tdsDeducted?.toString() || '0',
-                  refundAmount: ((extractedData.tdsDeducted || 0) - comparison.newRegime.totalTax).toString()
-                });
-
-                // Generate intelligent tax suggestions with user profile considerations
-                const userProfile = {
-                  age: undefined, // dateOfBirth not available in Form16Data, could be enhanced by user input later
-                  hasParents: false, // Could be enhanced by user input later
-                  isMetroCity: false, // Could be determined by address
-                  hasHomeLoan: false, // Could be detected from deductions or user input
-                  investmentRiskProfile: ((extractedData.grossSalary || 0) > 1000000 ? 'moderate' : 'conservative') as 'moderate' | 'conservative' | 'aggressive'
-                };
-
-                const suggestions = taxCalculator.generateTaxSuggestions(
-                  extractedData.grossSalary,
-                  extractedData.deductions || {},
-                  extractedData.assessmentYear || document.assessmentYear,
-                  userProfile
-                );
-
-                for (const suggestion of suggestions) {
-                  await storage.createTaxSuggestion({
-                    userId,
-                    assessmentYear: extractedData.assessmentYear || document.assessmentYear,
-                    section: suggestion.section,
-                    category: suggestion.category,
-                    suggestion: suggestion.suggestion,
-                    currentAmount: suggestion.currentAmount.toString(),
-                    maxAmount: suggestion.maxAmount.toString(),
-                    potentialSaving: suggestion.potentialSaving.toString(),
-                    priority: suggestion.priority,
-                    urgency: suggestion.urgency
-                  });
-                }
-              }
-            });
-
-            stream.on('error', async (error) => {
-              console.error('Error processing PDF:', error);
-              await storage.updateTaxDocument(document.id, userId, {
-                status: 'failed',
-                processedAt: new Date()
-              });
-            });
-          } catch (error) {
-            console.error('Error processing document:', error);
-            await storage.updateTaxDocument(document.id, userId, {
-              status: 'failed',
-              processedAt: new Date()
-            });
-          }
-        });
-      } else {
-        res.json({ document });
-      }
+      // Never process automatically - only through upload-complete route
+      res.json({ document });
     } catch (error) {
       console.error("Error creating tax document:", error);
       if (error instanceof z.ZodError) {
@@ -260,9 +146,151 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       res.json({ document: updatedDocument });
+
+      // Process PDF in background after returning response
+      setImmediate(async () => {
+        try {
+          const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
+          
+          // Download and process PDF
+          const chunks: Buffer[] = [];
+          const stream = objectFile.createReadStream();
+          
+          stream.on('data', (chunk) => chunks.push(chunk));
+          stream.on('end', async () => {
+            try {
+              const pdfBuffer = Buffer.concat(chunks);
+              const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
+              
+              // Update document with extracted data
+              await storage.updateTaxDocument(documentId, userId, {
+                extractedData,
+                status: 'completed',
+                processedAt: new Date()
+              });
+
+              // Create income sources and investments from extracted data
+              if (extractedData.grossSalary) {
+                await storage.createIncomeSource({
+                  userId,
+                  documentId,
+                  source: 'salary',
+                  amount: extractedData.grossSalary.toString(),
+                  assessmentYear: extractedData.assessmentYear || updatedDocument.assessmentYear,
+                  description: 'Salary income from Form 16'
+                });
+              }
+
+              // Create investments from deductions
+              if (extractedData.deductions) {
+                for (const [section, amount] of Object.entries(extractedData.deductions)) {
+                  await storage.createInvestment({
+                    userId,
+                    documentId,
+                    section,
+                    type: `${section} Investment`,
+                    amount: amount.toString(),
+                    assessmentYear: extractedData.assessmentYear || updatedDocument.assessmentYear,
+                    description: `Deduction under section ${section}`
+                  });
+                }
+              }
+
+              // Calculate taxes
+              if (extractedData.grossSalary) {
+                const comparison = taxCalculator.compareRegimes(
+                  extractedData.grossSalary,
+                  extractedData.deductions || {}
+                );
+
+                await storage.createTaxCalculation({
+                  userId,
+                  documentId,
+                  assessmentYear: extractedData.assessmentYear || updatedDocument.assessmentYear,
+                  grossIncome: extractedData.grossSalary.toString(),
+                  totalDeductions: comparison.oldRegime.totalDeductions.toString(),
+                  taxableIncome: comparison.oldRegime.taxableIncome.toString(),
+                  oldRegimeTax: comparison.oldRegime.totalTax.toString(),
+                  newRegimeTax: comparison.newRegime.totalTax.toString(),
+                  tdsDeducted: extractedData.tdsDeducted?.toString() || '0',
+                  refundAmount: ((extractedData.tdsDeducted || 0) - comparison.newRegime.totalTax).toString()
+                });
+
+                // Generate intelligent tax suggestions with user profile considerations
+                const userProfile = {
+                  age: undefined,
+                  hasParents: false,
+                  isMetroCity: false,
+                  hasHomeLoan: false,
+                  investmentRiskProfile: ((extractedData.grossSalary || 0) > 1000000 ? 'moderate' : 'conservative') as 'moderate' | 'conservative' | 'aggressive'
+                };
+
+                const suggestions = taxCalculator.generateTaxSuggestions(
+                  extractedData.grossSalary,
+                  extractedData.deductions || {},
+                  extractedData.assessmentYear || updatedDocument.assessmentYear,
+                  userProfile
+                );
+
+                for (const suggestion of suggestions) {
+                  await storage.createTaxSuggestion({
+                    userId,
+                    assessmentYear: extractedData.assessmentYear || updatedDocument.assessmentYear,
+                    section: suggestion.section,
+                    category: suggestion.category,
+                    suggestion: suggestion.suggestion,
+                    currentAmount: suggestion.currentAmount.toString(),
+                    maxAmount: suggestion.maxAmount.toString(),
+                    potentialSaving: suggestion.potentialSaving.toString(),
+                    priority: suggestion.priority,
+                    urgency: suggestion.urgency
+                  });
+                }
+              }
+            } catch (processError) {
+              console.error('Error processing PDF data:', processError);
+              await storage.updateTaxDocument(documentId, userId, {
+                status: 'failed',
+                processedAt: new Date()
+              });
+            }
+          });
+
+          stream.on('error', async (error) => {
+            console.error('Error reading PDF stream:', error);
+            await storage.updateTaxDocument(documentId, userId, {
+              status: 'failed',
+              processedAt: new Date()
+            });
+          });
+        } catch (error) {
+          console.error('Error processing document:', error);
+          await storage.updateTaxDocument(documentId, userId, {
+            status: 'failed',
+            processedAt: new Date()
+          });
+        }
+      });
     } catch (error) {
       console.error("Error updating document upload:", error);
       res.status(500).json({ error: "Failed to update document" });
+    }
+  });
+
+  app.get('/api/tax-documents/:id', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const documentId = req.params.id;
+      const document = await storage.getTaxDocument(documentId, userId);
+      
+      if (!document) {
+        return res.status(404).json({ message: "Document not found" });
+      }
+      
+      res.json(document);
+    } catch (error) {
+      console.error("Error fetching tax document:", error);
+      res.status(500).json({ message: "Failed to fetch tax document" });
     }
   });
 
