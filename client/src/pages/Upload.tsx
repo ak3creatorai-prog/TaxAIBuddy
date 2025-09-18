@@ -346,8 +346,8 @@ export default function Upload() {
               <h4 className="font-medium mb-2">Document Quality</h4>
               <ul className="text-sm text-muted-foreground space-y-1">
                 <li>• Use the original PDF from your employer</li>
-                <li>• Ensure all text is clearly readable</li>
-                <li>• Avoid scanned or photographed documents if possible</li>
+                <li>• Both text-based and scanned/image PDFs are supported</li>
+                <li>• Ensure all text is clearly readable for best accuracy</li>
                 <li>• Check that all pages are included</li>
               </ul>
             </div>
