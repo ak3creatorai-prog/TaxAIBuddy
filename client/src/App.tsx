@@ -9,6 +9,7 @@ import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
 import Upload from "@/pages/Upload";
 import TaxComparison from "@/pages/TaxComparison";
+import TaxPlanning from "@/pages/TaxPlanning";
 import YearAnalysis from "@/pages/YearAnalysis";
 import AdditionalIncome from "@/pages/AdditionalIncome";
 import NotFound from "@/pages/not-found";
@@ -37,6 +38,7 @@ function Router() {
             <Route path="/" component={Dashboard} />
             <Route path="/upload" component={Upload} />
             <Route path="/tax-comparison" component={TaxComparison} />
+            <Route path="/tax-planning" component={TaxPlanning} />
             <Route path="/year-analysis" component={YearAnalysis} />
             <Route path="/additional-income" component={AdditionalIncome} />
             <Route component={NotFound} />

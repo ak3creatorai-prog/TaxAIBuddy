@@ -177,21 +177,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   refundAmount: ((extractedData.tdsDeducted || 0) - comparison.newRegime.totalTax).toString()
                 });
 
-                // Generate suggestions
+                // Generate intelligent tax suggestions with user profile considerations
+                const userProfile = {
+                  age: extractedData.dateOfBirth ? 
+                    new Date().getFullYear() - new Date(extractedData.dateOfBirth).getFullYear() : undefined,
+                  hasParents: false, // Could be enhanced by user input later
+                  isMetroCity: false, // Could be determined by address
+                  hasHomeLoan: false, // Could be detected from deductions or user input
+                  investmentRiskProfile: (extractedData.grossSalary || 0) > 1000000 ? 'moderate' : 'conservative' as const
+                };
+
                 const suggestions = taxCalculator.generateTaxSuggestions(
                   extractedData.grossSalary,
                   extractedData.deductions || {},
-                  extractedData.assessmentYear || document.assessmentYear
+                  extractedData.assessmentYear || document.assessmentYear,
+                  userProfile
                 );
 
                 for (const suggestion of suggestions) {
                   await storage.createTaxSuggestion({
                     userId,
                     assessmentYear: extractedData.assessmentYear || document.assessmentYear,
-                    category: 'investment',
+                    section: suggestion.section,
+                    category: suggestion.category,
                     suggestion: suggestion.suggestion,
+                    currentAmount: suggestion.currentAmount.toString(),
+                    maxAmount: suggestion.maxAmount.toString(),
                     potentialSaving: suggestion.potentialSaving.toString(),
-                    priority: suggestion.priority
+                    priority: suggestion.priority,
+                    urgency: suggestion.urgency
                   });
                 }
               }
@@ -443,6 +457,80 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching tax suggestions:", error);
       res.status(500).json({ message: "Failed to fetch tax suggestions" });
+    }
+  });
+
+  // Generate personalized tax suggestions
+  app.post('/api/tax-suggestions/generate', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { 
+        grossIncome, 
+        currentDeductions, 
+        assessmentYear, 
+        userProfile 
+      } = req.body;
+
+      // Validate required fields
+      if (!grossIncome || !assessmentYear) {
+        return res.status(400).json({ message: "grossIncome and assessmentYear are required" });
+      }
+
+      // Generate suggestions using the enhanced engine
+      const suggestions = taxCalculator.generateTaxSuggestions(
+        parseFloat(grossIncome),
+        currentDeductions || {},
+        assessmentYear,
+        userProfile
+      );
+
+      // Save new suggestions (optionally replace old ones for this year)
+      if (req.body.saveToDatabase !== false) {
+        for (const suggestion of suggestions) {
+          await storage.createTaxSuggestion({
+            userId,
+            assessmentYear,
+            section: suggestion.section,
+            category: suggestion.category,
+            suggestion: suggestion.suggestion,
+            currentAmount: suggestion.currentAmount.toString(),
+            maxAmount: suggestion.maxAmount.toString(),
+            potentialSaving: suggestion.potentialSaving.toString(),
+            priority: suggestion.priority,
+            urgency: suggestion.urgency
+          });
+        }
+      }
+
+      res.json({ 
+        suggestions,
+        totalPotentialSaving: suggestions.reduce((sum, s) => sum + s.potentialSaving, 0),
+        highPrioritySuggestions: suggestions.filter(s => s.urgency === 'high').length
+      });
+    } catch (error) {
+      console.error("Error generating tax suggestions:", error);
+      res.status(500).json({ message: "Failed to generate tax suggestions" });
+    }
+  });
+
+  // Mark tax suggestion as implemented
+  app.put('/api/tax-suggestions/:id/implement', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const suggestionId = req.params.id;
+      
+      const updated = await storage.updateTaxSuggestion(suggestionId, userId, {
+        isImplemented: true
+      });
+      
+      if (!updated) {
+        return res.status(404).json({ message: "Tax suggestion not found" });
+      }
+      
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating tax suggestion:", error);
+      res.status(500).json({ message: "Failed to update tax suggestion" });
     }
   });
 

@@ -95,10 +95,14 @@ export const taxSuggestions = pgTable("tax_suggestions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   assessmentYear: varchar("assessment_year").notNull(),
-  category: varchar("category").notNull(), // investment, deduction, planning
+  section: varchar("section"), // 80C, 80D, REGIME, etc.
+  category: varchar("category").notNull(), // investment, insurance, loan, savings, strategy
   suggestion: text("suggestion").notNull(),
+  currentAmount: decimal("current_amount", { precision: 12, scale: 2 }).default('0'),
+  maxAmount: decimal("max_amount", { precision: 12, scale: 2 }).default('0'),
   potentialSaving: decimal("potential_saving", { precision: 12, scale: 2 }),
-  priority: integer("priority").notNull().default(1), // 1-5, 1 being highest
+  priority: integer("priority").notNull().default(1), // 1-10, 1 being highest
+  urgency: varchar("urgency").notNull().default('medium'), // high, medium, low
   isImplemented: boolean("is_implemented").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow(),
 });

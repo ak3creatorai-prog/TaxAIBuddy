@@ -20,6 +20,7 @@ export function Layout({ children }: LayoutProps) {
     { path: "/", label: "Dashboard", icon: "fas fa-tachometer-alt" },
     { path: "/upload", label: "Upload Form 16", icon: "fas fa-upload" },
     { path: "/tax-comparison", label: "Tax Comparison", icon: "fas fa-balance-scale" },
+    { path: "/tax-planning", label: "Smart Tax Planning", icon: "fas fa-lightbulb" },
     { path: "/year-analysis", label: "Year Analysis", icon: "fas fa-chart-line" },
     { path: "/additional-income", label: "Additional Income", icon: "fas fa-plus-circle" }
   ];

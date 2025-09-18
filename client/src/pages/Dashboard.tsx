@@ -278,9 +278,16 @@ export default function Dashboard() {
         {/* Tax Suggestions */}
         <Card data-testid="card-tax-suggestions">
           <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <Lightbulb className="h-5 w-5" />
-              <span>Tax Planning Suggestions</span>
+            <CardTitle className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Lightbulb className="h-5 w-5" />
+                <span>Smart Tax Planning</span>
+              </div>
+              {dashboardData?.suggestions.length > 0 && (
+                <Badge variant="secondary" className="text-xs" data-testid="suggestions-count">
+                  {dashboardData.suggestions.filter(s => s.urgency === 'high').length} high priority
+                </Badge>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -291,21 +298,110 @@ export default function Dashboard() {
                 <p className="text-xs">Upload Form 16 to get personalized advice</p>
               </div>
             ) : (
-              dashboardData.suggestions.slice(0, 3).map((suggestion, index) => (
-                <div key={suggestion.id} className="p-3 bg-muted/50 rounded-lg" data-testid={`suggestion-${index}`}>
-                  <div className="flex items-start justify-between mb-2">
-                    <h4 className="text-sm font-medium" data-testid={`suggestion-category-${index}`}>
-                      {suggestion.category.charAt(0).toUpperCase() + suggestion.category.slice(1)} Opportunity
-                    </h4>
-                    <Badge variant="outline" className="text-xs" data-testid={`suggestion-savings-${index}`}>
-                      Save {formatCurrency(parseFloat(suggestion.potentialSaving || '0'))}
-                    </Badge>
-                  </div>
-                  <p className="text-sm text-muted-foreground" data-testid={`suggestion-text-${index}`}>
-                    {suggestion.suggestion}
-                  </p>
-                </div>
-              ))
+              dashboardData.suggestions
+                .sort((a, b) => {
+                  // Sort by urgency first (high > medium > low), then by potential savings
+                  const urgencyOrder = { 'high': 3, 'medium': 2, 'low': 1 };
+                  const urgencyA = urgencyOrder[a.urgency as keyof typeof urgencyOrder] || 1;
+                  const urgencyB = urgencyOrder[b.urgency as keyof typeof urgencyOrder] || 1;
+                  
+                  if (urgencyA !== urgencyB) return urgencyB - urgencyA;
+                  
+                  const savingsA = parseFloat(a.potentialSaving || '0');
+                  const savingsB = parseFloat(b.potentialSaving || '0');
+                  return savingsB - savingsA;
+                })
+                .slice(0, 4)
+                .map((suggestion, index) => {
+                  const urgencyColors = {
+                    high: 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800',
+                    medium: 'bg-yellow-50 dark:bg-yellow-950 border-yellow-200 dark:border-yellow-800',
+                    low: 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800'
+                  };
+                  
+                  const urgencyIcons = {
+                    high: '🔥',
+                    medium: '⚡',
+                    low: '💡'
+                  };
+
+                  const categoryIcons = {
+                    investment: '📈',
+                    insurance: '🛡️',
+                    loan: '🏠',
+                    savings: '💰',
+                    strategy: '🎯'
+                  };
+
+                  return (
+                    <div 
+                      key={suggestion.id} 
+                      className={`p-4 rounded-lg border transition-all hover:shadow-sm ${urgencyColors[suggestion.urgency as keyof typeof urgencyColors] || urgencyColors.low}`}
+                      data-testid={`suggestion-${index}`}
+                    >
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-start space-x-2">
+                          <span className="text-lg">{urgencyIcons[suggestion.urgency as keyof typeof urgencyIcons] || '💡'}</span>
+                          <div>
+                            <div className="flex items-center space-x-2 mb-1">
+                              <h4 className="text-sm font-semibold" data-testid={`suggestion-category-${index}`}>
+                                {categoryIcons[suggestion.category as keyof typeof categoryIcons] || '📋'} 
+                                {suggestion.category.charAt(0).toUpperCase() + suggestion.category.slice(1)}
+                                {suggestion.section && (
+                                  <span className="text-xs text-muted-foreground ml-1">
+                                    ({suggestion.section})
+                                  </span>
+                                )}
+                              </h4>
+                              <Badge 
+                                variant={suggestion.urgency === 'high' ? 'destructive' : suggestion.urgency === 'medium' ? 'secondary' : 'outline'}
+                                className="text-xs"
+                                data-testid={`suggestion-urgency-${index}`}
+                              >
+                                {suggestion.urgency}
+                              </Badge>
+                            </div>
+                          </div>
+                        </div>
+                        <Badge variant="outline" className="text-xs font-semibold" data-testid={`suggestion-savings-${index}`}>
+                          ₹{parseFloat(suggestion.potentialSaving || '0').toLocaleString()} saved
+                        </Badge>
+                      </div>
+                      
+                      <p className="text-sm text-muted-foreground mb-3 leading-relaxed" data-testid={`suggestion-text-${index}`}>
+                        {suggestion.suggestion}
+                      </p>
+                      
+                      {(suggestion.currentAmount || suggestion.maxAmount) && (
+                        <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t border-border/50">
+                          <span>Current: ₹{parseFloat(suggestion.currentAmount || '0').toLocaleString()}</span>
+                          {suggestion.maxAmount && parseFloat(suggestion.maxAmount) > 0 && (
+                            <span>Max: ₹{parseFloat(suggestion.maxAmount).toLocaleString()}</span>
+                          )}
+                        </div>
+                      )}
+                      
+                      {!suggestion.isImplemented && (
+                        <Button 
+                          size="sm" 
+                          variant="outline" 
+                          className="mt-2 text-xs" 
+                          data-testid={`suggestion-action-${index}`}
+                        >
+                          Take Action
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })
+            )}
+            
+            {dashboardData?.suggestions.length > 4 && (
+              <div className="text-center pt-2">
+                <Badge variant="outline" className="text-xs">
+                  +{dashboardData.suggestions.length - 4} more suggestions available
+                </Badge>
+              </div>
             )}
           </CardContent>
         </Card>
