@@ -169,16 +169,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({ document: updatedDocument });
 
+      console.log(`[ROUTE DEBUG] Upload complete route finished, about to start background processing for ${documentId}`);
+      
       // Process PDF in background after returning response
-      setImmediate(async () => {
-        try {
+      setImmediate(() => {
+        (async () => {
+          console.log(`[PDF Processing] Starting background processing for document ${documentId}`);
+          try {
           // Ensure we have updated document data for processing
           if (!updatedDocument) {
             console.error('Updated document is undefined, cannot process PDF');
             return;
           }
+          console.log(`[PDF Processing] Document verified, file path: ${objectPath}`);
           
+          console.log(`[PDF Processing] Getting object file from storage...`);
           const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
+          console.log(`[PDF Processing] Object file retrieved successfully`);
           
           // Download and process PDF with safe size validation using pipeline
           const chunks: Buffer[] = [];
@@ -195,17 +202,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
           
           try {
+            console.log(`[PDF Processing] Starting PDF download pipeline...`);
             // Use safe pipeline for stream handling
-            await pipeline(sourceStream, byteLimitTransform, collectTransform);
+            try {
+              await pipeline(sourceStream, byteLimitTransform, collectTransform);
+              console.log(`[PDF Processing] Pipeline completed successfully`);
+            } catch (pipelineError) {
+              console.error(`[PDF Processing] Pipeline failed:`, pipelineError);
+              throw new Error(`PDF download pipeline failed: ${pipelineError.message}`);
+            }
+            
             const pdfBuffer = Buffer.concat(chunks);
-            const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
+            console.log(`[PDF Processing] PDF downloaded successfully, size: ${pdfBuffer.length} bytes`);
+            
+            console.log(`[PDF Processing] Starting Form 16 data extraction...`);
+            let extractedData;
+            try {
+              extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
+              console.log(`[PDF Processing] Extraction completed, extracted data:`, JSON.stringify(extractedData, null, 2));
+            } catch (extractionError) {
+              console.error(`[PDF Processing] Data extraction failed:`, extractionError);
+              throw new Error(`PDF data extraction failed: ${extractionError.message}`);
+            }
               
               // Update document with extracted data
-              await storage.updateTaxDocument(documentId, userId, {
-                extractedData,
-                status: 'completed',
-                processedAt: new Date()
-              });
+              console.log(`[PDF Processing] Updating document with extracted data...`);
+              try {
+                await storage.updateTaxDocument(documentId, userId, {
+                  extractedData,
+                  status: 'completed',
+                  processedAt: new Date()
+                });
+                console.log(`[PDF Processing] Document updated successfully to completed status`);
+              } catch (updateError) {
+                console.error(`[PDF Processing] Document update failed:`, updateError);
+                throw new Error(`Document update failed: ${updateError.message}`);
+              }
 
               // Create income sources and investments from extracted data
               if (extractedData.grossSalary) {
