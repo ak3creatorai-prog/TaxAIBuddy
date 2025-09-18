@@ -106,7 +106,7 @@ export default function Upload() {
   const [taxResults, setTaxResults] = useState<any>(null);
 
   const createDocumentMutation = useMutation({
-    mutationFn: async (data: { fileName: string; assessmentYear: string; filePath: string }) => {
+    mutationFn: async (data: { fileName: string; assessmentYear: string; filePath?: string }) => {
       const response = await apiRequest('POST', '/api/tax-documents', data);
       return await response.json();
     },
@@ -261,25 +261,30 @@ export default function Upload() {
     const uploadedFile = result.successful[0];
     const fileName = uploadedFile.name || 'Form16.pdf';
     const uploadURL = uploadedFile.uploadURL as string;
-    const filePath = extractObjectPath(uploadURL);
 
     try {
-      // Create document record with filePath
+      // Create document record without filePath (security)
       const documentResult = await createDocumentMutation.mutateAsync({
         fileName,
-        assessmentYear,
-        filePath
+        assessmentYear
       });
 
-      // Update with upload URL to set ACL and trigger processing
+      // Set ACL and trigger processing through upload-complete
       await updateDocumentMutation.mutateAsync({
         documentId: documentResult.document.id,
         uploadURL: uploadURL
       });
 
+      // Start polling for extraction results
+      pollForExtractedData(documentResult.document.id);
+
     } catch (error) {
       console.error('Upload completion error:', error);
-    } finally {
+      toast({
+        title: "Upload Failed",
+        description: "Failed to process your document. Please try again.",
+        variant: "destructive",
+      });
       setIsUploading(false);
     }
   };
@@ -548,37 +553,43 @@ export default function Upload() {
                   </div>
 
                   {/* File Upload */}
-                  <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary/50 transition-colors">
-                    <ObjectUploader
-                      maxNumberOfFiles={1}
-                      maxFileSize={10485760} // 10MB
-                      onGetUploadParameters={handleGetUploadParameters}
-                      onComplete={handleUploadComplete}
-                      buttonClassName="bg-primary text-primary-foreground hover:bg-primary/90 px-8 py-6 text-lg"
-                    >
+                  <div className="border-2 border-dashed border-border rounded-lg hover:border-primary/50 transition-colors">
+                    <div className="p-8 text-center">
                       <div className="flex flex-col items-center space-y-6">
                         <div className="bg-gradient-to-br from-primary/20 to-primary/10 p-6 rounded-full">
                           <UploadIcon className="h-12 w-12 text-primary" />
                         </div>
-                        <div>
-                          <h3 className="text-xl font-semibold mb-2">Choose Form 16 PDF</h3>
-                          <p className="text-muted-foreground text-lg mb-3">
-                            Drag and drop your file here, or click to browse
-                          </p>
-                          <p className="text-sm text-muted-foreground">
-                            Supports both text-based and scanned PDFs • Maximum size: 10MB
-                          </p>
+                        <div className="space-y-4">
+                          <div>
+                            <h3 className="text-xl font-semibold mb-2">Upload Your Form 16 PDF</h3>
+                            <p className="text-muted-foreground text-lg mb-3">
+                              Drag and drop your file here, or click the button below
+                            </p>
+                            <p className="text-sm text-muted-foreground">
+                              Supports both text-based and scanned PDFs • Maximum size: 10MB
+                            </p>
+                          </div>
+                          <ObjectUploader
+                            maxNumberOfFiles={1}
+                            maxFileSize={10485760} // 10MB
+                            onGetUploadParameters={handleGetUploadParameters}
+                            onComplete={handleUploadComplete}
+                            buttonClassName="bg-primary text-primary-foreground hover:bg-primary/90 px-8 py-3 rounded-lg text-lg font-medium transition-colors"
+                          >
+                            <UploadIcon className="h-5 w-5 mr-2" />
+                            Choose Form 16 PDF
+                          </ObjectUploader>
                         </div>
                       </div>
-                    </ObjectUploader>
+                    </div>
 
                     {isUploading && (
-                      <div className="mt-6 p-6 bg-muted/50 rounded-lg">
+                      <div className="border-t bg-muted/50 p-6">
                         <div className="flex items-center justify-center space-x-3">
                           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
                           <span className="text-lg text-muted-foreground">Processing your document...</span>
                         </div>
-                        <p className="text-sm text-muted-foreground mt-2">This usually takes 1-2 minutes</p>
+                        <p className="text-sm text-muted-foreground mt-2 text-center">This usually takes 1-2 minutes</p>
                       </div>
                     )}
                   </div>
