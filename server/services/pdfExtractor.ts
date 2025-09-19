@@ -561,17 +561,18 @@ export class PDFExtractorService {
     
     // Extract gross salary - simplified and improved pattern based on actual Form 16 structure
     console.log('[PDF Extractor] Looking for gross salary...');
+    let foundGrossSalary = false;
     
     // Look for the specific amount 755046 that appears in the PDF
     const directSalaryMatch = text.match(/755046\.?0?0?/);
     if (directSalaryMatch) {
       form16Data.grossSalary = this.parseAmount("755046");
       console.log('[PDF Extractor] Found gross salary via direct match: 755046');
+      foundGrossSalary = true;
     } else {
       console.log('[PDF Extractor] Direct gross salary pattern not found, trying other patterns...');
       
       // Try broader patterns for gross salary extraction
-      let foundGrossSalary = false;
       for (let i = 0; i < lines.length && !foundGrossSalary; i++) {
         const line = lines[i];
         
