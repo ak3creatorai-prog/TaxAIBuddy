@@ -127,17 +127,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = req.user.claims.sub;
       const { fileName, assessmentYear, uploadURL } = req.body;
       
+      // Validation
+      if (!fileName || !assessmentYear || !uploadURL) {
+        return res.status(400).json({ 
+          error: 'Validation Error', 
+          message: 'fileName, assessmentYear, and uploadURL are required',
+          success: false 
+        });
+      }
+      
+      // Validate fileName length and format
+      if (fileName.length > 200 || !fileName.endsWith('.pdf')) {
+        return res.status(400).json({
+          error: 'Invalid fileName',
+          message: 'fileName must be a PDF under 200 characters',
+          success: false
+        });
+      }
+      
+      // Validate assessment year format
+      const yearRegex = /^\d{4}-\d{2}$/;
+      if (!yearRegex.test(assessmentYear)) {
+        return res.status(400).json({
+          error: 'Invalid assessmentYear',
+          message: 'assessmentYear must be in YYYY-YY format',
+          success: false
+        });
+      }
+      
+      // Validate uploadURL format
+      if (!uploadURL.startsWith('https://storage.googleapis.com/')) {
+        return res.status(400).json({
+          error: 'Invalid uploadURL',
+          message: 'uploadURL must be a valid Google Cloud Storage URL',
+          success: false
+        });
+      }
+      
       console.log(`[SYNC Upload] Starting synchronous upload and extraction for ${fileName}`);
       
       // Set ACL policy for uploaded file
       const objectStorageService = new ObjectStorageService();
-      const objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
-        uploadURL,
-        {
-          owner: userId,
-          visibility: "private"
-        }
-      );
+      let objectPath;
+      
+      try {
+        objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
+          uploadURL,
+          {
+            owner: userId,
+            visibility: "private"
+          }
+        );
+      } catch (aclError) {
+        console.error(`[SYNC Upload] ACL policy failed:`, aclError);
+        return res.status(400).json({
+          error: 'Invalid Upload URL',
+          message: 'The provided upload URL is invalid or expired',
+          success: false
+        });
+      }
       
       // Create document record
       const document = await storage.createTaxDocument({
