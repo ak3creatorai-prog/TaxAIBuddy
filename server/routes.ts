@@ -278,6 +278,102 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Tax regime comparison endpoint
+  app.post("/api/tax/calculate-comparison", isAuthenticated, async (req: any, res) => {
+    try {
+      const { grossIncome, additionalInvestments = {} } = req.body;
+      
+      if (!grossIncome || grossIncome <= 0) {
+        return res.status(400).json({ error: 'Valid gross income is required' });
+      }
+      
+      console.log(`[Tax Calculation] Calculating regime comparison for gross income: ${grossIncome}`);
+      
+      // Calculate old regime tax (with all deductions)
+      const oldRegimeTax = taxCalculator.calculateOldRegimeTax(grossIncome, additionalInvestments);
+      
+      // Calculate new regime tax (only standard deduction)
+      const newRegimeTax = taxCalculator.calculateNewRegimeTax(grossIncome);
+      
+      // Determine which regime is better
+      const savings = oldRegimeTax.totalTax - newRegimeTax.totalTax;
+      const recommendation = savings > 0 ? 'new' : 'old';
+      
+      const comparison = {
+        oldRegime: oldRegimeTax,
+        newRegime: newRegimeTax,
+        savings: Math.abs(savings),
+        recommendation,
+        summary: {
+          betterRegime: recommendation,
+          potentialSavings: Math.abs(savings),
+          message: savings > 0 
+            ? `New regime saves ₹${Math.abs(savings).toLocaleString('en-IN')}`
+            : `Old regime saves ₹${Math.abs(savings).toLocaleString('en-IN')}`
+        }
+      };
+      
+      console.log(`[Tax Calculation] Comparison completed:`, comparison.summary);
+      res.json(comparison);
+      
+    } catch (error) {
+      console.error('Error calculating tax comparison:', error);
+      res.status(500).json({ error: 'Tax calculation failed' });
+    }
+  });
+
+  // Investment management endpoints
+  app.post("/api/investments", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const investmentData = { ...req.body, userId };
+      
+      const investment = await storage.createInvestment(investmentData);
+      res.json({ investment, success: true });
+    } catch (error) {
+      console.error('Error creating investment:', error);
+      res.status(500).json({ error: 'Failed to create investment' });
+    }
+  });
+
+  app.put("/api/investments/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const investmentId = req.params.id;
+      
+      const investment = await storage.updateInvestment(investmentId, userId, req.body);
+      if (!investment) {
+        return res.status(404).json({ error: 'Investment not found' });
+      }
+      
+      res.json({ investment, success: true });
+    } catch (error) {
+      console.error('Error updating investment:', error);
+      res.status(500).json({ error: 'Failed to update investment' });
+    }
+  });
+
+  app.delete("/api/investments/:id", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const investmentId = req.params.id;
+      
+      // Note: We don't have a delete method in storage, so we'll implement a soft delete
+      const investment = await storage.updateInvestment(investmentId, userId, { 
+        amount: '0' // Set amount to 0 as a soft delete
+      });
+      
+      if (!investment) {
+        return res.status(404).json({ error: 'Investment not found' });
+      }
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Error deleting investment:', error);
+      res.status(500).json({ error: 'Failed to delete investment' });
+    }
+  });
+
   // DEPRECATED: Old async upload endpoint - keeping for backwards compatibility
   app.put("/api/tax-documents/:id/upload-complete", isAuthenticated, async (req: any, res) => {
     // This endpoint is now deprecated in favor of synchronous processing
