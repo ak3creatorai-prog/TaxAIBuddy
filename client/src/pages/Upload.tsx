@@ -107,12 +107,41 @@ export default function Upload() {
   const [processingStatus, setProcessingStatus] = useState<'idle' | 'processing' | 'completed' | 'failed'>('idle');
   const [processingError, setProcessingError] = useState<string | null>(null);
 
-  const createDocumentMutation = useMutation({
-    mutationFn: async (data: { fileName: string; assessmentYear: string; filePath?: string }) => {
-      const response = await apiRequest('POST', '/api/tax-documents', data);
+  // NEW: Synchronous upload and extract mutation
+  const uploadAndExtractMutation = useMutation({
+    mutationFn: async (data: { fileName: string; assessmentYear: string; uploadURL: string }) => {
+      const response = await apiRequest('POST', '/api/documents/upload-and-extract', data);
       return await response.json();
     },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/tax-documents'] });
+      
+      if (data.success && data.extractedData) {
+        setCurrentDocument(data.document);
+        setExtractedData(data.extractedData);
+        setProcessingStatus('completed');
+        setCurrentStep(2);
+        setIsUploading(false);
+        toast({
+          title: "Processing Complete",
+          description: "Your Form 16 data has been extracted successfully!",
+        });
+      } else {
+        setProcessingStatus('failed');
+        setProcessingError(data.message || "Extraction failed");
+        setIsUploading(false);
+        toast({
+          title: "Processing Failed",
+          description: data.message || "Failed to extract data from your Form 16.",
+          variant: "destructive",
+        });
+      }
+    },
     onError: (error) => {
+      setProcessingStatus('failed');
+      setProcessingError("Upload and extraction failed");
+      setIsUploading(false);
       if (isUnauthorizedError(error)) {
         toast({
           title: "Unauthorized",
@@ -126,48 +155,7 @@ export default function Upload() {
       }
       toast({
         title: "Upload Error",
-        description: "Failed to create document record",
-        variant: "destructive",
-      });
-    }
-  });
-
-  const updateDocumentMutation = useMutation({
-    mutationFn: async ({ documentId, uploadURL }: { documentId: string; uploadURL: string }) => {
-      const response = await apiRequest('PUT', `/api/tax-documents/${documentId}/upload-complete`, {
-        uploadURL
-      });
-      return await response.json();
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['/api/dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/tax-documents'] });
-      setCurrentDocument(data.document);
-      // Start polling for extracted data
-      setProcessingStatus('processing');
-      setProcessingError(null);
-      pollForExtractedData(data.document.id);
-      setCurrentStep(2);
-      toast({
-        title: "Upload Successful",
-        description: "Your Form 16 is being processed. Results will appear shortly.",
-      });
-    },
-    onError: (error) => {
-      if (isUnauthorizedError(error)) {
-        toast({
-          title: "Unauthorized",
-          description: "You are logged out. Logging in again...",
-          variant: "destructive",
-        });
-        setTimeout(() => {
-          window.location.href = "/api/login";
-        }, 500);
-        return;
-      }
-      toast({
-        title: "Processing Error",
-        description: "Upload completed but processing failed. Please try again.",
+        description: "Failed to upload and process your document. Please try again.",
         variant: "destructive",
       });
     }
@@ -206,56 +194,7 @@ export default function Upload() {
     }
   };
 
-  // Poll for extracted data
-  const pollForExtractedData = async (documentId: string) => {
-    const maxAttempts = 30; // 30 attempts with 2-second intervals = 1 minute
-    let attempts = 0;
-    
-    const poll = async () => {
-      try {
-        const response = await apiRequest('GET', `/api/tax-documents/${documentId}`);
-        const document = await response.json();
-        
-        if (document.status === 'completed' && document.extractedData) {
-          setExtractedData(document.extractedData);
-          setProcessingStatus('completed');
-          setProcessingError(null);
-          setIsUploading(false);
-          toast({
-            title: "Processing Complete",
-            description: "Your Form 16 data has been extracted successfully!",
-          });
-          return;
-        } else if (document.status === 'failed') {
-          setProcessingStatus('failed');
-          setProcessingError(document.errorMessage || "Failed to extract data from your Form 16. Please try uploading again.");
-          setIsUploading(false);
-          toast({
-            title: "Processing Failed",
-            description: document.errorMessage || "Failed to extract data from your Form 16. Please try uploading again.",
-            variant: "destructive",
-          });
-          return;
-        }
-        
-        // Continue polling if still processing
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(poll, 2000);
-        } else {
-          toast({
-            title: "Processing Timeout",
-            description: "Processing is taking longer than expected. Please check back later.",
-            variant: "destructive",
-          });
-        }
-      } catch (error) {
-        console.error('Error polling for extracted data:', error);
-      }
-    };
-    
-    poll();
-  };
+  // No longer needed - processing is now synchronous
 
   const handleUploadComplete = async (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
     if (!result.successful || result.successful.length === 0) {
@@ -268,36 +207,30 @@ export default function Upload() {
     }
 
     setIsUploading(true);
+    setProcessingStatus('processing');
+    setProcessingError(null);
+    
     const uploadedFile = result.successful[0];
     const fileName = uploadedFile.name || 'Form16.pdf';
     const uploadURL = uploadedFile.uploadURL as string;
 
     try {
-      // Create document record without filePath (security)
-      const documentResult = await createDocumentMutation.mutateAsync({
+      // NEW: Use synchronous upload and extract endpoint
+      await uploadAndExtractMutation.mutateAsync({
         fileName,
-        assessmentYear
+        assessmentYear,
+        uploadURL
       });
-
-      // Set ACL and trigger processing through upload-complete
-      await updateDocumentMutation.mutateAsync({
-        documentId: documentResult.document.id,
-        uploadURL: uploadURL
-      });
-
-      // Start polling for extraction results
-      setProcessingStatus('processing');
-      setProcessingError(null);
-      pollForExtractedData(documentResult.document.id);
-
     } catch (error) {
-      console.error('Upload completion error:', error);
+      console.error('Upload and extraction error:', error);
+      setProcessingStatus('failed');
+      setProcessingError("Upload and extraction failed");
+      setIsUploading(false);
       toast({
         title: "Upload Failed",
         description: "Failed to process your document. Please try again.",
         variant: "destructive",
       });
-      setIsUploading(false);
     }
   };
 
@@ -608,13 +541,43 @@ export default function Upload() {
                       </div>
                     </div>
 
-                    {isUploading && (
+                    {/* Processing Status */}
+                    {processingStatus === 'processing' && (
                       <div className="border-t bg-muted/50 p-6">
                         <div className="flex items-center justify-center space-x-3">
                           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-                          <span className="text-lg text-muted-foreground">Processing your document...</span>
+                          <span className="text-lg text-muted-foreground">Extracting data from your Form 16...</span>
                         </div>
-                        <p className="text-sm text-muted-foreground mt-2 text-center">This usually takes 1-2 minutes</p>
+                        <p className="text-sm text-muted-foreground mt-2 text-center">Processing now happens instantly!</p>
+                      </div>
+                    )}
+                    
+                    {processingStatus === 'completed' && extractedData && (
+                      <div className="border-t bg-green-50 dark:bg-green-900/20 p-6">
+                        <div className="flex items-center justify-center space-x-3 text-green-700 dark:text-green-400">
+                          <CheckCircle className="h-6 w-6" />
+                          <span className="text-lg font-medium">Data extracted successfully!</span>
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-2 text-center">Your Form 16 data is ready for review.</p>
+                      </div>
+                    )}
+                    
+                    {processingStatus === 'failed' && processingError && (
+                      <div className="border-t bg-red-50 dark:bg-red-900/20 p-6">
+                        <div className="flex items-center justify-center space-x-3 text-red-700 dark:text-red-400">
+                          <AlertCircle className="h-6 w-6" />
+                          <span className="text-lg font-medium">Processing failed</span>
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-2 text-center">{processingError}</p>
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="mt-3 mx-auto block"
+                          onClick={handleRetryProcessing}
+                          data-testid="button-retry-processing"
+                        >
+                          Try Again
+                        </Button>
                       </div>
                     )}
                   </div>
