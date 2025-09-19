@@ -121,27 +121,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // NEW: Synchronous upload and extraction endpoint
+  // Simplified synchronous upload and extraction endpoint
   app.post("/api/documents/upload-and-extract", isAuthenticated, async (req: any, res) => {
-    // Set request timeout to prevent hanging
-    res.setTimeout(45000, () => {
-      console.error('[SYNC Upload] Request timed out after 45 seconds');
+    // Extended timeout for OCR processing (up to 6 minutes)
+    res.setTimeout(360000, () => {
       if (!res.headersSent) {
-        res.status(408).json({ error: 'Request timeout', success: false });
+        res.status(408).json({ error: 'Processing timeout - please try again with a clearer PDF', success: false });
       }
     });
     
-    console.time('sync_upload_total');
     try {
       const userId = req.user.claims.sub;
       const { fileName, assessmentYear, uploadURL } = req.body;
-      
-      console.log('[SYNC Upload] Request started:', {
-        userId: userId.substring(0, 8) + '...',
-        fileName,
-        assessmentYear,
-        uploadURL: uploadURL.substring(0, 50) + '...'
-      });
       
       // Validation
       if (!fileName || !assessmentYear || !uploadURL) {
@@ -152,7 +143,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
-      // Validate fileName length and format
       if (fileName.length > 200 || !fileName.endsWith('.pdf')) {
         return res.status(400).json({
           error: 'Invalid fileName',
@@ -161,7 +151,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
-      // Validate assessment year format
       const yearRegex = /^\d{4}-\d{2}$/;
       if (!yearRegex.test(assessmentYear)) {
         return res.status(400).json({
@@ -171,7 +160,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
-      // Validate uploadURL format
       if (!uploadURL.startsWith('https://storage.googleapis.com/')) {
         return res.status(400).json({
           error: 'Invalid uploadURL',
@@ -180,15 +168,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
-      console.log(`[SYNC Upload] Starting synchronous upload and extraction for ${fileName}`);
-      
       // Set ACL policy for uploaded file
-      console.time('acl_policy');
       const objectStorageService = new ObjectStorageService();
       let objectPath;
       
       try {
-        console.log('[SYNC Upload] Setting ACL policy...');
         objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
           uploadURL,
           {
@@ -196,11 +180,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             visibility: "private"
           }
         );
-        console.timeEnd('acl_policy');
-        console.log('[SYNC Upload] ACL policy set successfully, objectPath:', objectPath);
       } catch (aclError) {
-        console.timeEnd('acl_policy');
-        console.error(`[SYNC Upload] ACL policy failed:`, aclError);
+        console.error('ACL policy failed:', aclError);
         return res.status(400).json({
           error: 'Invalid Upload URL',
           message: 'The provided upload URL is invalid or expired',
@@ -209,8 +190,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // Create document record
-      console.time('create_document');
-      console.log('[SYNC Upload] Creating document record...');
       const document = await storage.createTaxDocument({
         userId,
         fileName,
@@ -218,120 +197,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
         assessmentYear,
         status: 'processing'
       });
-      console.timeEnd('create_document');
-      
-      console.log(`[SYNC Upload] Document created with ID: ${document.id}`);
       
       try {
-        // Get PDF file from storage
-        console.time('get_object_file');
-        console.log(`[SYNC Upload] Getting PDF file from storage...`);
+        // Simple PDF download approach
         const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
-        console.timeEnd('get_object_file');
-        console.log(`[SYNC Upload] Object file retrieved, starting download...`);
         
-        // Download PDF with size validation
-        console.time('download_pdf');
+        // Download PDF to buffer using simple approach
         const chunks: Buffer[] = [];
-        const maxSize = 50 * 1024 * 1024; // 50MB limit
-        const sourceStream = objectFile.createReadStream();
-        const byteLimitTransform = new ByteLimitTransform(maxSize);
+        const readStream = objectFile.createReadStream();
         
-        // Add stream event logging
-        sourceStream.on('open', () => console.log('[SYNC Upload] Source stream opened'));
-        sourceStream.on('error', (err) => console.error('[SYNC Upload] Source stream error:', err));
-        sourceStream.on('end', () => console.log('[SYNC Upload] Source stream ended'));
-        
-        byteLimitTransform.on('error', (err) => console.error('[SYNC Upload] ByteLimit error:', err));
-        
-        const collectTransform = new Transform({
-          transform(chunk, encoding, callback) {
-            chunks.push(chunk);
-            if (chunks.length % 10 === 0) { // Log every 10 chunks
-              const totalBytes = chunks.reduce((sum, buf) => sum + buf.length, 0);
-              console.log(`[SYNC Upload] Downloaded ${chunks.length} chunks, ${totalBytes} bytes so far`);
+        // Simple promise-based download without complex timeouts
+        const pdfBuffer = await new Promise<Buffer>((resolve, reject) => {
+          let totalSize = 0;
+          const maxSize = 50 * 1024 * 1024; // 50MB limit
+          
+          readStream.on('data', (chunk: Buffer) => {
+            totalSize += chunk.length;
+            if (totalSize > maxSize) {
+              readStream.destroy();
+              reject(new Error('PDF file too large (>50MB)'));
+              return;
             }
-            callback(null, chunk);
-          }
+            chunks.push(chunk);
+          });
+          
+          readStream.on('end', () => {
+            resolve(Buffer.concat(chunks));
+          });
+          
+          readStream.on('error', (error) => {
+            reject(error);
+          });
         });
         
-        collectTransform.on('error', (err) => console.error('[SYNC Upload] Collect transform error:', err));
-        
-        console.log(`[SYNC Upload] Starting PDF download pipeline...`);
-        
-        // Add download timeout to prevent hanging
-        const downloadTimeoutMs = 20000;
-        const pipelinePromise = pipeline(sourceStream, byteLimitTransform, collectTransform);
-        const downloadTimeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('PDF download timeout after 20 seconds')), downloadTimeoutMs)
-        );
-        
-        await Promise.race([pipelinePromise, downloadTimeoutPromise]);
-        console.timeEnd('download_pdf');
-        
-        const pdfBuffer = Buffer.concat(chunks);
-        console.log(`[SYNC Upload] PDF downloaded successfully, size: ${pdfBuffer.length} bytes, chunks: ${chunks.length}`);
-        
-        console.log(`[SYNC Upload] Starting PDF extraction...`);
-        console.time('extract_pdf');
-        
-        // Extract data from PDF synchronously with timeout
-        const extractionPromise = pdfExtractor.extractForm16Data(pdfBuffer);
-        const extractionTimeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('PDF extraction timeout after 30 seconds')), 30000)
-        );
-        
-        const extractedData = await Promise.race([extractionPromise, extractionTimeoutPromise]);
-        console.timeEnd('extract_pdf');
-        console.log(`[SYNC Upload] PDF extraction completed successfully`);
-        
-        console.log(`[SYNC Upload] Extraction completed with fields:`, Object.keys(extractedData || {}));
+        // Extract PDF data
+        const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
         
         // Update document with extracted data
-        console.time('update_document');
-        console.log('[SYNC Upload] Updating document with extracted data...');
         const completedDocument = await storage.updateTaxDocument(document.id, userId, {
           extractedData,
           status: 'completed',
           processedAt: new Date()
         });
-        console.timeEnd('update_document');
         
-        console.log(`[SYNC Upload] Document processing completed successfully`);
-        console.timeEnd('sync_upload_total');
-        
-        // Return completed document with extracted data
-        res.json({ 
-          document: completedDocument,
-          extractedData,
-          success: true
+        res.json({
+          success: true,
+          document: completedDocument
         });
         
-      } catch (extractionError) {
-        console.error(`[SYNC Upload] Extraction failed:`, extractionError);
+      } catch (processingError) {
+        console.error('PDF processing failed:', processingError);
         
-        // Update document as failed
-        await storage.updateTaxDocument(document.id, userId, {
-          status: 'failed',
-          processedAt: new Date()
-        });
+        // Update document status to failed
+        try {
+          await storage.updateTaxDocument(document.id, userId, {
+            status: 'failed',
+            processedAt: new Date()
+          });
+        } catch (updateError) {
+          console.error('Failed to update document status:', updateError);
+        }
         
-        // Return specific error message
-        const errorMessage = extractionError instanceof Error ? extractionError.message : 'Unknown extraction error';
-        res.status(422).json({ 
-          error: 'PDF Processing Failed',
-          message: errorMessage,
-          document: document,
-          success: false
-        });
+        const errorMessage = processingError instanceof Error ? processingError.message : 'PDF processing failed';
+        res.status(422).json({ error: errorMessage, success: false });
       }
-      
     } catch (error) {
-      console.timeEnd('sync_upload_total');
-      console.error('Error in synchronous upload:', error);
-      console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+      console.error('Upload endpoint error:', error);
       if (!res.headersSent) {
-        res.status(500).json({ error: 'Upload and extraction failed', success: false });
+        const errorMessage = error instanceof Error ? error.message : 'Upload and extraction failed';
+        res.status(500).json({ error: errorMessage, success: false });
       }
     }
   });

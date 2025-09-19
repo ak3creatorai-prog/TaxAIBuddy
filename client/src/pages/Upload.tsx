@@ -117,12 +117,12 @@ export default function Upload() {
       });
       console.time('upload_and_extract_request');
       
-      // Add abort controller with 35-second client timeout
+      // Add abort controller with 6-minute client timeout (matching backend OCR processing time)
       const controller = new AbortController();
       const timeoutId = setTimeout(() => {
-        console.log('[Upload] Client timeout reached (35s), aborting request');
+        console.log('[Upload] Client timeout reached (6min), aborting request');
         controller.abort();
-      }, 35000);
+      }, 360000);
       
       try {
         console.log('[Upload] Making API request...');

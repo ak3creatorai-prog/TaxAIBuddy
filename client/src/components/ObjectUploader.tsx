@@ -73,8 +73,18 @@ export function ObjectUploader({
       })
       .on("complete", (result) => {
         onComplete?.(result);
+        // Auto-close modal after successful upload
+        setShowModal(false);
+      })
+      .on("cancel-all", () => {
+        // Close modal when user cancels
+        setShowModal(false);
       })
   );
+
+  const handleCloseModal = () => {
+    setShowModal(false);
+  };
 
   return (
     <div>
@@ -85,8 +95,10 @@ export function ObjectUploader({
       <DashboardModal
         uppy={uppy}
         open={showModal}
-        onRequestClose={() => setShowModal(false)}
+        onRequestClose={handleCloseModal}
         proudlyDisplayPoweredByUppy={false}
+        closeModalOnClickOutside={true}
+        closeAfterFinish={false}
       />
     </div>
   );
