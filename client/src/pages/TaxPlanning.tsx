@@ -62,6 +62,7 @@ export default function TaxPlanning() {
 
   const [suggestions, setSuggestions] = useState<SuggestionsResponse | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [activeTab, setActiveTab] = useState("input");
 
   const generateSuggestionsMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -76,6 +77,7 @@ export default function TaxPlanning() {
     },
     onSuccess: (data: SuggestionsResponse) => {
       setSuggestions(data);
+      setActiveTab("suggestions"); // Auto-switch to recommendations tab
       toast({
         title: "Tax Suggestions Generated",
         description: `Found ${data.suggestions.length} personalized recommendations with potential savings of ₹${data.totalPotentialSaving.toLocaleString()}`
@@ -168,7 +170,7 @@ export default function TaxPlanning() {
         </p>
       </div>
 
-      <Tabs defaultValue="input" className="space-y-6">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
         <TabsList className="grid w-full grid-cols-2" data-testid="tabs-list">
           <TabsTrigger value="input" data-testid="tab-input">Your Information</TabsTrigger>
           <TabsTrigger value="suggestions" disabled={!suggestions} data-testid="tab-suggestions">
