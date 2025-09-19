@@ -658,19 +658,25 @@ export class PDFExtractorService {
     
     // Now implement the missing financial field extractions with proper line-scoping
     
-    // Extract total deduction with Chapter VI-A scoping  
+    // Extract total deductions from aggregate deduction account with enhanced patterns
+    console.log('[PDF Extractor] Looking for total deductions from aggregate deduction account...');
     const totalDeductionPatterns = [
+      // Primary patterns for aggregate deduction account
+      /^(?:\d+\.?\s*)?(?:Total\s*)?(?:Aggregate\s*)?Deduction\s*Account\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Aggregate\s*(?:of\s*)?Deduction(?:s)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
       /^(?:\d+\.?\s*)?Total\s*(?:amount\s*of\s*)?deduction(?:s)?\s*(?:under\s*Chapter\s*VI-A)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Total\s*deduction(?:s)?\s*claimed\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+      /^(?:\d+\.?\s*)?Total\s*deduction(?:s)?\s*claimed\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Deduction(?:s)?\s*under\s*Chapter\s*VI-A\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
     ];
     
     const totalDeductionResult = searchInSection(chapterVIAStart, -1, totalDeductionPatterns);
     if (totalDeductionResult) {
-      form16Data.totalDeduction = this.parseAmount(totalDeductionResult);
-      // Set as aggregate deduction if not already set
-      if (!form16Data.aggregateDeduction) {
-        form16Data.aggregateDeduction = this.parseAmount(totalDeductionResult);
-      }
+      const amount = this.parseAmount(totalDeductionResult);
+      form16Data.totalDeduction = amount;
+      form16Data.aggregateDeduction = amount;
+      console.log(`[PDF Extractor] Found total deductions: ₹${amount}`);
+    } else {
+      console.log('[PDF Extractor] No total deductions found with standard patterns');
     }
     
     // Extract income chargeable under the head 'Salaries' with specific Form 16 patterns
@@ -684,7 +690,23 @@ export class PDFExtractorService {
       form16Data.incomeChargeable = this.parseAmount(incomeChargeableResult);
     }
     
+    // Extract net tax income with enhanced patterns
+    console.log('[PDF Extractor] Looking for net tax income...');
+    const netTaxIncomePatterns = [
+      /^(?:\d+\.?\s*)?Net\s*(?:Taxable\s*)?Income\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?(?:Total\s*)?Taxable\s*Income\s*(?:after\s*deductions)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Income\s*(?:chargeable\s*)?(?:to\s*)?tax\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Net\s*income\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+    ];
+    
+    const netTaxIncomeResult = searchInSection(chapterVIAStart >= 0 ? chapterVIAStart : partBStart, -1, netTaxIncomePatterns);
+    if (netTaxIncomeResult) {
+      form16Data.taxableIncome = this.parseAmount(netTaxIncomeResult);
+      console.log(`[PDF Extractor] Found net tax income: ₹${netTaxIncomeResult}`);
+    }
+    
     // Extract net tax payable with line-scoped patterns in tax computation section
+    console.log('[PDF Extractor] Looking for net tax payable...');
     const netTaxPayablePatterns = [
       /^(?:\d+\.?\s*)?(?:Net\s*)?Tax\s*payable\s*(?:\(after\s*TDS\))?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
       /^(?:\d+\.?\s*)?Balance\s*tax\s*payable\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
@@ -756,18 +778,34 @@ export class PDFExtractorService {
       }
     }
     
-    // Extract TDS
+    // Extract tax paid so far (TDS deducted) with enhanced patterns
+    console.log('[PDF Extractor] Looking for tax paid so far (TDS)...');
     const tdsPatterns = [
-      /TDS\s*Deducted\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /Tax\s*Deducted\s*at\s*Source\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /Total\s*TDS\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i
+      // Enhanced patterns for tax paid so far
+      /^(?:\d+\.?\s*)?Tax\s*paid\s*(?:so\s*far)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?(?:Total\s*)?TDS\s*(?:Deducted|Paid)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Tax\s*Deducted\s*at\s*Source\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?(?:Amount\s*of\s*)?Tax\s*deducted\s*(?:and\s*deposited)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Tax\s*already\s*paid\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /^(?:\d+\.?\s*)?Advance\s*(?:Tax\s*)?(?:Paid)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
     ];
     
-    for (const pattern of tdsPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        form16Data.tdsDeducted = this.parseAmount(match[1]);
-        break;
+    // Search in tax computation section (after Chapter VI-A)
+    const tdsResult = searchInSection(chapterVIAStart >= 0 ? chapterVIAStart : partBStart, -1, tdsPatterns);
+    if (tdsResult) {
+      form16Data.tdsDeducted = this.parseAmount(tdsResult);
+      console.log(`[PDF Extractor] Found tax paid so far (TDS): ₹${tdsResult}`);
+    } else {
+      console.log('[PDF Extractor] No tax paid so far found with enhanced patterns');
+      
+      // Fallback to global search for TDS patterns
+      for (const pattern of tdsPatterns) {
+        const match = text.match(pattern);
+        if (match) {
+          form16Data.tdsDeducted = this.parseAmount(match[1]);
+          console.log(`[PDF Extractor] Found TDS via fallback pattern: ₹${match[1]}`);
+          break;
+        }
       }
     }
     
