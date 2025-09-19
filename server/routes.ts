@@ -123,9 +123,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // NEW: Synchronous upload and extraction endpoint
   app.post("/api/documents/upload-and-extract", isAuthenticated, async (req: any, res) => {
+    // Set request timeout to prevent hanging
+    res.setTimeout(45000, () => {
+      console.error('[SYNC Upload] Request timed out after 45 seconds');
+      if (!res.headersSent) {
+        res.status(408).json({ error: 'Request timeout', success: false });
+      }
+    });
+    
+    console.time('sync_upload_total');
     try {
       const userId = req.user.claims.sub;
       const { fileName, assessmentYear, uploadURL } = req.body;
+      
+      console.log('[SYNC Upload] Request started:', {
+        userId: userId.substring(0, 8) + '...',
+        fileName,
+        assessmentYear,
+        uploadURL: uploadURL.substring(0, 50) + '...'
+      });
       
       // Validation
       if (!fileName || !assessmentYear || !uploadURL) {
@@ -167,10 +183,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`[SYNC Upload] Starting synchronous upload and extraction for ${fileName}`);
       
       // Set ACL policy for uploaded file
+      console.time('acl_policy');
       const objectStorageService = new ObjectStorageService();
       let objectPath;
       
       try {
+        console.log('[SYNC Upload] Setting ACL policy...');
         objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
           uploadURL,
           {
@@ -178,7 +196,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             visibility: "private"
           }
         );
+        console.timeEnd('acl_policy');
+        console.log('[SYNC Upload] ACL policy set successfully, objectPath:', objectPath);
       } catch (aclError) {
+        console.timeEnd('acl_policy');
         console.error(`[SYNC Upload] ACL policy failed:`, aclError);
         return res.status(400).json({
           error: 'Invalid Upload URL',
@@ -188,6 +209,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // Create document record
+      console.time('create_document');
+      console.log('[SYNC Upload] Creating document record...');
       const document = await storage.createTaxDocument({
         userId,
         fileName,
@@ -195,54 +218,87 @@ export async function registerRoutes(app: Express): Promise<Server> {
         assessmentYear,
         status: 'processing'
       });
+      console.timeEnd('create_document');
       
       console.log(`[SYNC Upload] Document created with ID: ${document.id}`);
       
       try {
         // Get PDF file from storage
+        console.time('get_object_file');
         console.log(`[SYNC Upload] Getting PDF file from storage...`);
         const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
+        console.timeEnd('get_object_file');
         console.log(`[SYNC Upload] Object file retrieved, starting download...`);
         
         // Download PDF with size validation
+        console.time('download_pdf');
         const chunks: Buffer[] = [];
         const maxSize = 50 * 1024 * 1024; // 50MB limit
         const sourceStream = objectFile.createReadStream();
         const byteLimitTransform = new ByteLimitTransform(maxSize);
         
+        // Add stream event logging
+        sourceStream.on('open', () => console.log('[SYNC Upload] Source stream opened'));
+        sourceStream.on('error', (err) => console.error('[SYNC Upload] Source stream error:', err));
+        sourceStream.on('end', () => console.log('[SYNC Upload] Source stream ended'));
+        
+        byteLimitTransform.on('error', (err) => console.error('[SYNC Upload] ByteLimit error:', err));
+        
         const collectTransform = new Transform({
           transform(chunk, encoding, callback) {
             chunks.push(chunk);
+            if (chunks.length % 10 === 0) { // Log every 10 chunks
+              const totalBytes = chunks.reduce((sum, buf) => sum + buf.length, 0);
+              console.log(`[SYNC Upload] Downloaded ${chunks.length} chunks, ${totalBytes} bytes so far`);
+            }
             callback(null, chunk);
           }
         });
         
+        collectTransform.on('error', (err) => console.error('[SYNC Upload] Collect transform error:', err));
+        
         console.log(`[SYNC Upload] Starting PDF download pipeline...`);
-        await pipeline(sourceStream, byteLimitTransform, collectTransform);
+        
+        // Add download timeout to prevent hanging
+        const downloadTimeoutMs = 20000;
+        const pipelinePromise = pipeline(sourceStream, byteLimitTransform, collectTransform);
+        const downloadTimeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('PDF download timeout after 20 seconds')), downloadTimeoutMs)
+        );
+        
+        await Promise.race([pipelinePromise, downloadTimeoutPromise]);
+        console.timeEnd('download_pdf');
+        
         const pdfBuffer = Buffer.concat(chunks);
-        console.log(`[SYNC Upload] PDF downloaded successfully, size: ${pdfBuffer.length} bytes`);
+        console.log(`[SYNC Upload] PDF downloaded successfully, size: ${pdfBuffer.length} bytes, chunks: ${chunks.length}`);
         
         console.log(`[SYNC Upload] Starting PDF extraction...`);
+        console.time('extract_pdf');
         
         // Extract data from PDF synchronously with timeout
         const extractionPromise = pdfExtractor.extractForm16Data(pdfBuffer);
-        const timeoutPromise = new Promise((_, reject) => 
+        const extractionTimeoutPromise = new Promise((_, reject) => 
           setTimeout(() => reject(new Error('PDF extraction timeout after 30 seconds')), 30000)
         );
         
-        const extractedData = await Promise.race([extractionPromise, timeoutPromise]);
+        const extractedData = await Promise.race([extractionPromise, extractionTimeoutPromise]);
+        console.timeEnd('extract_pdf');
         console.log(`[SYNC Upload] PDF extraction completed successfully`);
         
-        console.log(`[SYNC Upload] Extraction completed:`, JSON.stringify(extractedData, null, 2));
+        console.log(`[SYNC Upload] Extraction completed with fields:`, Object.keys(extractedData || {}));
         
         // Update document with extracted data
+        console.time('update_document');
+        console.log('[SYNC Upload] Updating document with extracted data...');
         const completedDocument = await storage.updateTaxDocument(document.id, userId, {
           extractedData,
           status: 'completed',
           processedAt: new Date()
         });
+        console.timeEnd('update_document');
         
         console.log(`[SYNC Upload] Document processing completed successfully`);
+        console.timeEnd('sync_upload_total');
         
         // Return completed document with extracted data
         res.json({ 
@@ -271,8 +327,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
     } catch (error) {
+      console.timeEnd('sync_upload_total');
       console.error('Error in synchronous upload:', error);
-      res.status(500).json({ error: 'Upload and extraction failed', success: false });
+      console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Upload and extraction failed', success: false });
+      }
     }
   });
 

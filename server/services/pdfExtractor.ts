@@ -63,18 +63,40 @@ export interface Form16Data {
 
 export class PDFExtractorService {
   async extractForm16Data(pdfBuffer: Buffer): Promise<Form16Data> {
+    console.log('[PDF Extractor] Starting Form 16 data extraction, buffer size:', pdfBuffer.length, 'bytes');
+    console.time('pdf_extract_total');
+    
     try {
       // First try to extract text directly from PDF
+      console.log('[PDF Extractor] Attempting direct text extraction from PDF...');
+      console.time('pdf_parse');
       const data = await pdf(pdfBuffer);
+      console.timeEnd('pdf_parse');
+      
       let extractedText = data.text.trim();
+      console.log('[PDF Extractor] Direct extraction completed, text length:', extractedText.length);
+      console.log('[PDF Extractor] Text analysis: has form16 keywords:', /form.?16|assessment.?year|gross.?salary/i.test(extractedText));
       
       // Check if the extracted text is minimal (likely image-based PDF)
-      if (this.isImageBasedPdf(extractedText)) {
-        console.log('Image-based PDF detected, using OCR...');
+      const isImageBased = this.isImageBasedPdf(extractedText);
+      console.log('[PDF Extractor] Image-based PDF detection result:', isImageBased);
+      
+      if (isImageBased) {
+        console.log('[PDF Extractor] Image-based PDF detected, switching to OCR...');
+        console.time('ocr_total');
         extractedText = await this.extractTextWithOCR(pdfBuffer);
+        console.timeEnd('ocr_total');
+        console.log('[PDF Extractor] OCR completed, final text length:', extractedText.length);
       }
       
-      return this.parseForm16Text(extractedText);
+      console.log('[PDF Extractor] Starting text parsing...');
+      console.time('parse_text');
+      const result = this.parseForm16Text(extractedText);
+      console.timeEnd('parse_text');
+      console.timeEnd('pdf_extract_total');
+      
+      console.log('[PDF Extractor] Extraction completed successfully');
+      return result;
     } catch (error) {
       console.error('PDF extraction error:', error);
       
@@ -123,63 +145,95 @@ export class PDFExtractorService {
   }
 
   private async extractTextWithOCR(pdfBuffer: Buffer): Promise<string> {
+    console.log('[OCR] Starting OCR text extraction, buffer size:', pdfBuffer.length, 'bytes');
+    
     // Input validation
     if (pdfBuffer.length > 50 * 1024 * 1024) { // 50MB limit
       throw new Error('PDF file too large for OCR processing');
     }
+    console.log('[OCR] Size validation passed');
 
     // Acquire semaphore for concurrency control
+    console.log('[OCR] Acquiring OCR semaphore...');
+    console.time('ocr_semaphore_wait');
     await ocrSemaphore.acquire();
+    console.timeEnd('ocr_semaphore_wait');
+    console.log('[OCR] Semaphore acquired, starting processing');
     
     try {
       return await this.performOCRWithTimeout(pdfBuffer);
     } finally {
+      console.log('[OCR] Releasing semaphore');
       ocrSemaphore.release();
     }
   }
 
   private async performOCRWithTimeout(pdfBuffer: Buffer): Promise<string> {
+    console.log('[OCR] Setting up timeout wrapper for OCR processing');
+    console.time('ocr_setup');
+    
     // Create isolated temp directory for this job
     const jobTempDir = await mkdtemp(join(tmpdir(), 'pdf-ocr-'));
     const tempPdfPath = join(jobTempDir, 'document.pdf');
+    console.log('[OCR] Created temp directory:', jobTempDir);
     
     const controller = new AbortController();
     const timeoutMs = 5 * 60 * 1000; // 5 minute timeout
+    console.log('[OCR] Set timeout to', timeoutMs/1000, 'seconds');
     
     // Set up timeout that will cancel the operation using native setTimeout
     const timeoutHandle: NodeJS.Timeout = global.setTimeout(() => {
+      console.log('[OCR] Timeout reached, aborting OCR operation');
       controller.abort();
     }, timeoutMs);
     
+    console.timeEnd('ocr_setup');
+    console.log('[OCR] Starting OCR processing with timeout protection');
+    console.time('ocr_processing');
+    
     try {
       const result = await this.performOCR(pdfBuffer, jobTempDir, tempPdfPath, controller.signal);
+      console.timeEnd('ocr_processing');
       clearTimeout(timeoutHandle);
+      console.log('[OCR] OCR processing completed successfully');
       return result;
     } catch (error) {
+      console.timeEnd('ocr_processing');
       clearTimeout(timeoutHandle);
       if (controller.signal.aborted) {
+        console.log('[OCR] OCR operation was cancelled due to timeout');
         throw new Error('OCR processing timeout - operation was cancelled');
       }
+      console.error('[OCR] OCR processing failed:', error);
       throw error;
     } finally {
       // Guaranteed cleanup of temp directory and all contents
+      console.log('[OCR] Cleaning up temp directory:', jobTempDir);
       try {
         await rm(jobTempDir, { recursive: true, force: true });
+        console.log('[OCR] Temp directory cleanup completed');
       } catch (e) {
-        console.warn('Failed to cleanup temp directory:', jobTempDir, e);
+        console.warn('[OCR] Failed to cleanup temp directory:', jobTempDir, e);
       }
     }
   }
 
   private async performOCR(pdfBuffer: Buffer, jobTempDir: string, tempPdfPath: string, signal: AbortSignal): Promise<string> {
+    console.log('[OCR] Starting detailed OCR processing');
+    console.time('write_temp_file');
+    
     try {
       // Write PDF buffer to temporary file
+      console.log('[OCR] Writing PDF buffer to temp file:', tempPdfPath);
       await writeFile(tempPdfPath, pdfBuffer);
+      console.timeEnd('write_temp_file');
+      console.log('[OCR] PDF written to temp file successfully');
       
       if (signal.aborted) throw new Error('OCR operation was cancelled');
       
       // Convert only the first few pages to prevent abuse
       const maxPages = 10;
+      console.log('[OCR] Configuring pdf2pic for up to', maxPages, 'pages');
       const pdf2picOptions = {
         density: 200,           // Balanced for quality/performance
         saveFilename: "page",
@@ -190,22 +244,35 @@ export class PDFExtractorService {
         height: 1500
       };
       
+      console.log('[OCR] pdf2pic options:', pdf2picOptions);
       const convert = pdf2pic.fromPath(tempPdfPath, pdf2picOptions);
+      console.log('[OCR] pdf2pic converter created');
       
       // Convert only the pages we need (1 to maxPages)
+      console.time('convert_pages');
       const pages = [];
+      console.log('[OCR] Starting page conversion loop');
+      
       for (let i = 1; i <= maxPages; i++) {
         if (signal.aborted) throw new Error('OCR operation was cancelled');
         
+        console.log(`[OCR] Converting page ${i}...`);
+        console.time(`convert_page_${i}`);
         try {
           const page = await convert(i);
+          console.timeEnd(`convert_page_${i}`);
           pages.push(page);
+          console.log(`[OCR] Page ${i} converted successfully:`, page.path);
         } catch (pageError) {
+          console.timeEnd(`convert_page_${i}`);
           // Page doesn't exist or conversion failed, stop here
-          console.log(`Page ${i} conversion failed or doesn't exist:`, pageError);
+          console.log(`[OCR] Page ${i} conversion failed or doesn't exist:`, pageError);
           break;
         }
       }
+      
+      console.timeEnd('convert_pages');
+      console.log('[OCR] Page conversion completed, total pages converted:', pages.length);
       
       if (pages.length === 0) {
         throw new Error('No pages could be converted for OCR');
@@ -214,24 +281,42 @@ export class PDFExtractorService {
       if (signal.aborted) throw new Error('OCR operation was cancelled');
       
       let allText = '';
+      console.log('[OCR] Starting Tesseract OCR processing on', pages.length, 'pages');
+      console.time('tesseract_ocr_total');
       
       // Process each page with OCR using the simple Tesseract.recognize API
       for (let i = 0; i < pages.length; i++) {
         if (signal.aborted) throw new Error('OCR operation was cancelled');
         
         const page = pages[i];
+        console.log(`[OCR] Processing page ${i + 1} with Tesseract...`);
+        
         if (page.path) {
+          console.time(`tesseract_page_${i + 1}`);
           try {
+            console.log(`[OCR] Running Tesseract.recognize on:`, page.path);
             const { data: { text } } = await Tesseract.recognize(page.path, 'eng', {
               logger: () => {}, // Disable verbose logging
             });
+            console.timeEnd(`tesseract_page_${i + 1}`);
+            
+            const pageTextLength = text.trim().length;
+            console.log(`[OCR] Page ${i + 1} OCR completed, extracted ${pageTextLength} characters`);
+            console.log(`[OCR] Page ${i + 1} contains keywords:`, /form.?16|pan|salary|tax/i.test(text));
+            
             allText += `Page ${i + 1}:\n${text}\n\n`;
           } catch (pageError) {
-            console.warn(`OCR failed for page ${i + 1}:`, pageError);
+            console.timeEnd(`tesseract_page_${i + 1}`);
+            console.warn(`[OCR] Tesseract failed for page ${i + 1}:`, pageError);
             // Continue with other pages
           }
+        } else {
+          console.warn(`[OCR] Page ${i + 1} has no path, skipping`);
         }
       }
+      
+      console.timeEnd('tesseract_ocr_total');
+      console.log('[OCR] All Tesseract processing completed, total text length:', allText.length);
       
       if (allText.trim().length === 0) {
         throw new Error('No text could be extracted from PDF using OCR');

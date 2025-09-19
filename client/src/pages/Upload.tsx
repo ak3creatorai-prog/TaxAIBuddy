@@ -107,17 +107,67 @@ export default function Upload() {
   const [processingStatus, setProcessingStatus] = useState<'idle' | 'processing' | 'completed' | 'failed'>('idle');
   const [processingError, setProcessingError] = useState<string | null>(null);
 
-  // NEW: Synchronous upload and extract mutation
+  // NEW: Synchronous upload and extract mutation with comprehensive logging and timeout
   const uploadAndExtractMutation = useMutation({
     mutationFn: async (data: { fileName: string; assessmentYear: string; uploadURL: string }) => {
-      const response = await apiRequest('POST', '/api/documents/upload-and-extract', data);
-      return await response.json();
+      console.log('[Upload] Starting upload-and-extract request', {
+        fileName: data.fileName,
+        assessmentYear: data.assessmentYear,
+        uploadURL: data.uploadURL.substring(0, 50) + '...'
+      });
+      console.time('upload_and_extract_request');
+      
+      // Add abort controller with 35-second client timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.log('[Upload] Client timeout reached (35s), aborting request');
+        controller.abort();
+      }, 35000);
+      
+      try {
+        console.log('[Upload] Making API request...');
+        const response = await fetch('/api/documents/upload-and-extract', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(data),
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        console.timeEnd('upload_and_extract_request');
+        console.log('[Upload] Response received, status:', response.status);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('[Upload] Non-ok response:', response.status, errorText);
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+        
+        const jsonData = await response.json();
+        console.log('[Upload] Response parsed successfully:', jsonData);
+        return jsonData;
+      } catch (error) {
+        clearTimeout(timeoutId);
+        console.timeEnd('upload_and_extract_request');
+        
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          console.error('[Upload] Request was aborted due to timeout');
+          throw new Error('Upload timed out after 35 seconds. Please try with a smaller file.');
+        }
+        
+        console.error('[Upload] Request failed:', error);
+        throw error;
+      }
     },
     onSuccess: (data) => {
+      console.log('[Upload] Mutation succeeded with data:', data);
       queryClient.invalidateQueries({ queryKey: ['/api/dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['/api/tax-documents'] });
       
       if (data.success && data.extractedData) {
+        console.log('[Upload] Processing completed successfully, extracted data keys:', Object.keys(data.extractedData));
         setCurrentDocument(data.document);
         setExtractedData(data.extractedData);
         setProcessingStatus('completed');
@@ -128,6 +178,7 @@ export default function Upload() {
           description: "Your Form 16 data has been extracted successfully!",
         });
       } else {
+        console.log('[Upload] Processing failed, success:', data.success, 'message:', data.message);
         setProcessingStatus('failed');
         setProcessingError(data.message || "Extraction failed");
         setIsUploading(false);
@@ -139,10 +190,19 @@ export default function Upload() {
       }
     },
     onError: (error) => {
+      console.error('[Upload] Mutation failed with error:', error);
+      console.error('[Upload] Error details:', {
+        name: error instanceof Error ? error.name : 'Unknown',
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : 'No stack'
+      });
+      
       setProcessingStatus('failed');
-      setProcessingError("Upload and extraction failed");
+      setProcessingError(error instanceof Error ? error.message : "Upload and extraction failed");
       setIsUploading(false);
+      
       if (isUnauthorizedError(error)) {
+        console.log('[Upload] Unauthorized error, redirecting to login');
         toast({
           title: "Unauthorized",
           description: "You are logged out. Logging in again...",
@@ -153,11 +213,17 @@ export default function Upload() {
         }, 500);
         return;
       }
+      
+      const errorMessage = error instanceof Error ? error.message : "Failed to upload and process your document. Please try again.";
       toast({
         title: "Upload Error",
-        description: "Failed to upload and process your document. Please try again.",
+        description: errorMessage,
         variant: "destructive",
       });
+    },
+    onSettled: () => {
+      console.log('[Upload] Mutation settled, ensuring UI state is cleared');
+      setIsUploading(false);
     }
   });
 
@@ -197,7 +263,13 @@ export default function Upload() {
   // No longer needed - processing is now synchronous
 
   const handleUploadComplete = async (result: UploadResult<Record<string, unknown>, Record<string, unknown>>) => {
+    console.log('[Upload] ObjectUploader completed with result:', {
+      successful: result.successful?.length || 0,
+      failed: result.failed?.length || 0
+    });
+    
     if (!result.successful || result.successful.length === 0) {
+      console.error('[Upload] No files were uploaded successfully to GCS');
       toast({
         title: "Upload Failed",
         description: "No files were uploaded successfully",
@@ -206,29 +278,36 @@ export default function Upload() {
       return;
     }
 
+    const uploadedFile = result.successful[0];
+    const fileName = uploadedFile.name || 'Form16.pdf';
+    const uploadURL = uploadedFile.uploadURL as string;
+    
+    console.log('[Upload] GCS upload successful:', {
+      fileName,
+      uploadURL: uploadURL.substring(0, 50) + '...',
+      assessmentYear
+    });
+
     setIsUploading(true);
     setProcessingStatus('processing');
     setProcessingError(null);
     
-    const uploadedFile = result.successful[0];
-    const fileName = uploadedFile.name || 'Form16.pdf';
-    const uploadURL = uploadedFile.uploadURL as string;
-
     try {
-      // NEW: Use synchronous upload and extract endpoint
+      console.log('[Upload] Starting synchronous extraction process...');
       await uploadAndExtractMutation.mutateAsync({
         fileName,
         assessmentYear,
         uploadURL
       });
+      console.log('[Upload] Synchronous extraction completed successfully');
     } catch (error) {
-      console.error('Upload and extraction error:', error);
+      console.error('[Upload] Synchronous extraction failed:', error);
       setProcessingStatus('failed');
-      setProcessingError("Upload and extraction failed");
+      setProcessingError(error instanceof Error ? error.message : "Upload and extraction failed");
       setIsUploading(false);
       toast({
         title: "Upload Failed",
-        description: "Failed to process your document. Please try again.",
+        description: error instanceof Error ? error.message : "Failed to process your document. Please try again.",
         variant: "destructive",
       });
     }
