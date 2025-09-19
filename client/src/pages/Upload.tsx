@@ -140,9 +140,19 @@ export default function Upload() {
         console.log('[Upload] Response received, status:', response.status);
         
         if (!response.ok) {
-          const errorText = await response.text();
-          console.error('[Upload] Non-ok response:', response.status, errorText);
-          throw new Error(`HTTP ${response.status}: ${errorText}`);
+          try {
+            const errorData = await response.json();
+            console.error('[Upload] Non-ok response:', response.status, errorData);
+            const error = new Error(errorData.error || `HTTP ${response.status} error`);
+            (error as any).status = response.status;
+            (error as any).failureReason = errorData.failureReason;
+            throw error;
+          } catch (parseError) {
+            // Fallback to text if JSON parsing fails
+            const errorText = await response.text();
+            console.error('[Upload] Non-ok response (text fallback):', response.status, errorText);
+            throw new Error(`HTTP ${response.status}: ${errorText}`);
+          }
         }
         
         const jsonData = await response.json();
@@ -154,7 +164,7 @@ export default function Upload() {
         
         if (error instanceof DOMException && error.name === 'AbortError') {
           console.error('[Upload] Request was aborted due to timeout');
-          throw new Error('Upload timed out after 35 seconds. Please try with a smaller file.');
+          throw new Error('Upload timed out after 6 minutes. Please try with a clearer or smaller PDF.');
         }
         
         console.error('[Upload] Request failed:', error);
@@ -166,10 +176,10 @@ export default function Upload() {
       queryClient.invalidateQueries({ queryKey: ['/api/dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['/api/tax-documents'] });
       
-      if (data.success && data.extractedData) {
-        console.log('[Upload] Processing completed successfully, extracted data keys:', Object.keys(data.extractedData));
+      if (data.success && data.document?.extractedData) {
+        console.log('[Upload] Processing completed successfully, extracted data keys:', Object.keys(data.document.extractedData));
         setCurrentDocument(data.document);
-        setExtractedData(data.extractedData);
+        setExtractedData(data.document.extractedData);
         setProcessingStatus('completed');
         setCurrentStep(2);
         setIsUploading(false);
@@ -178,27 +188,57 @@ export default function Upload() {
           description: "Your Form 16 data has been extracted successfully!",
         });
       } else {
-        console.log('[Upload] Processing failed, success:', data.success, 'message:', data.message);
+        console.log('[Upload] Processing failed, success:', data.success, 'error:', data.error);
         setProcessingStatus('failed');
-        setProcessingError(data.message || "Extraction failed");
+        setProcessingError(data.error || "Extraction failed");
         setIsUploading(false);
         toast({
           title: "Processing Failed",
-          description: data.message || "Failed to extract data from your Form 16.",
+          description: data.error || "Failed to extract data from your Form 16.",
           variant: "destructive",
         });
       }
     },
-    onError: (error) => {
+    onError: (error: any) => {
       console.error('[Upload] Mutation failed with error:', error);
       console.error('[Upload] Error details:', {
         name: error instanceof Error ? error.name : 'Unknown',
         message: error instanceof Error ? error.message : String(error),
+        failureReason: error.failureReason,
         stack: error instanceof Error ? error.stack : 'No stack'
       });
       
       setProcessingStatus('failed');
-      setProcessingError(error instanceof Error ? error.message : "Upload and extraction failed");
+      
+      // Enhanced error handling with user-friendly messages
+      let errorMessage = error instanceof Error ? error.message : "Upload and extraction failed";
+      let troubleshootingTips = '';
+      
+      // Use structured error information if available
+      if (error.failureReason) {
+        switch (error.failureReason) {
+          case 'PDF_PASSWORD_PROTECTED':
+            troubleshootingTips = 'Please remove password protection from your PDF and try again.';
+            break;
+          case 'PDF_CORRUPTED':
+            troubleshootingTips = 'Your PDF file appears to be corrupted. Please try downloading it again or use a different file.';
+            break;
+          case 'PROCESSING_TIMEOUT':
+            troubleshootingTips = 'The document is taking too long to process. Try uploading a clearer or smaller PDF.';
+            break;
+          case 'OCR_FAILURE':
+            troubleshootingTips = 'Unable to read text from your PDF. Please ensure it\'s a clear scan or try a different file.';
+            break;
+          case 'FILE_TOO_LARGE':
+            troubleshootingTips = 'Your file is too large. Please reduce the file size to under 50MB.';
+            break;
+          default:
+            troubleshootingTips = 'Please ensure your PDF is a valid Form 16 document and try again.';
+        }
+      }
+      
+      const fullErrorMessage = `${errorMessage}${troubleshootingTips ? '\n\n' + troubleshootingTips : ''}`;
+      setProcessingError(fullErrorMessage);
       setIsUploading(false);
       
       if (isUnauthorizedError(error)) {
@@ -214,10 +254,9 @@ export default function Upload() {
         return;
       }
       
-      const errorMessage = error instanceof Error ? error.message : "Failed to upload and process your document. Please try again.";
       toast({
         title: "Upload Error",
-        description: errorMessage,
+        description: troubleshootingTips || errorMessage,
         variant: "destructive",
       });
     },

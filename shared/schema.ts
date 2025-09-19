@@ -44,7 +44,8 @@ export const taxDocuments = pgTable("tax_documents", {
   filePath: varchar("file_path"), // Optional - set after upload completion for security
   assessmentYear: varchar("assessment_year").notNull(),
   status: varchar("status").notNull().default("processing"), // processing, completed, failed
-  extractedData: jsonb("extracted_data"),
+  extractedData: jsonb("extracted_data"), // Only for successful extractions - Form 16 data
+  processingError: jsonb("processing_error"), // Only for failed extractions - error details
   uploadedAt: timestamp("uploaded_at").defaultNow(),
   processedAt: timestamp("processed_at"),
 });

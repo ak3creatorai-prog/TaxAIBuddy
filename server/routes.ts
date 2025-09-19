@@ -248,18 +248,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (processingError) {
         console.error('PDF processing failed:', processingError);
         
-        // Update document status to failed
+        // Capture detailed error information
+        const errorMessage = processingError instanceof Error ? processingError.message : 'PDF processing failed';
+        const errorStack = processingError instanceof Error ? processingError.stack : undefined;
+        
+        // Categorize error for user-friendly display
+        const categorizeError = (message: string): string => {
+          const lowerMessage = message.toLowerCase();
+          if (lowerMessage.includes('password') || lowerMessage.includes('encrypted')) {
+            return 'PDF_PASSWORD_PROTECTED';
+          }
+          if (lowerMessage.includes('corrupted') || lowerMessage.includes('invalid pdf')) {
+            return 'PDF_CORRUPTED';
+          }
+          if (lowerMessage.includes('timeout') || lowerMessage.includes('cancelled')) {
+            return 'PROCESSING_TIMEOUT';
+          }
+          if (lowerMessage.includes('ocr') || lowerMessage.includes('tesseract')) {
+            return 'OCR_FAILURE';
+          }
+          if (lowerMessage.includes('too large')) {
+            return 'FILE_TOO_LARGE';
+          }
+          return 'GENERAL_PROCESSING_ERROR';
+        };
+        
+        const failureReason = categorizeError(errorMessage);
+        
+        // Update document status to failed with error details
         try {
           await storage.updateTaxDocument(document.id, userId, {
             status: 'failed',
-            processedAt: new Date()
+            processedAt: new Date(),
+            processingError: {
+              error: errorMessage,
+              failureReason: failureReason,
+              timestamp: new Date().toISOString()
+              // Note: Removed errorStack for security - don't expose internal stack traces to clients
+            }
           });
         } catch (updateError) {
           console.error('Failed to update document status:', updateError);
         }
         
-        const errorMessage = processingError instanceof Error ? processingError.message : 'PDF processing failed';
-        res.status(422).json({ error: errorMessage, success: false });
+        res.status(422).json({ 
+          error: errorMessage, 
+          success: false,
+          failureReason: failureReason
+        });
       }
     } catch (error) {
       console.error('Upload endpoint error:', error);
