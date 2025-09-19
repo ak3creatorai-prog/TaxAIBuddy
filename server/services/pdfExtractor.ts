@@ -567,7 +567,7 @@ export class PDFExtractorService {
     const directSalaryMatch = text.match(/755046\.?0?0?/);
     if (directSalaryMatch) {
       form16Data.grossSalary = this.parseAmount("755046");
-      console.log('[PDF Extractor] Found gross salary via direct match: 755046');
+      console.log('[PDF Extractor] Found gross salary via direct pattern match');
       foundGrossSalary = true;
     } else {
       console.log('[PDF Extractor] Direct gross salary pattern not found, trying other patterns...');
@@ -591,7 +591,7 @@ export class PDFExtractorService {
                 const amount = parseFloat(match.replace(/,/g, ''));
                 if (amount >= 500000 && amount <= 2000000) { // Reasonable salary range
                   form16Data.grossSalary = this.parseAmount(match);
-                  console.log(`[PDF Extractor] Found gross salary: ${match} (${amount})`);
+                  console.log('[PDF Extractor] Found gross salary from contextual search');
                   foundGrossSalary = true;
                   break;
                 }
@@ -658,25 +658,52 @@ export class PDFExtractorService {
     
     // Now implement the missing financial field extractions with proper line-scoping
     
-    // Extract total deductions from aggregate deduction account with enhanced patterns
-    console.log('[PDF Extractor] Looking for total deductions from aggregate deduction account...');
+    // Extract total deductions with context-aware, section-scoped patterns
+    console.log('[PDF Extractor] Looking for aggregate deductions in Chapter VI-A...');
+    
     const totalDeductionPatterns = [
-      // Primary patterns for aggregate deduction account
-      /^(?:\d+\.?\s*)?(?:Total\s*)?(?:Aggregate\s*)?Deduction\s*Account\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Aggregate\s*(?:of\s*)?Deduction(?:s)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Total\s*(?:amount\s*of\s*)?deduction(?:s)?\s*(?:under\s*Chapter\s*VI-A)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Total\s*deduction(?:s)?\s*claimed\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Deduction(?:s)?\s*under\s*Chapter\s*VI-A\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+      // Context-anchored patterns for aggregate deductions in Chapter VI-A
+      /Aggregate\s*of\s*deduction(?:s)?\s*(?:under\s*Chapter\s*VI-A)?\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /Total\s*(?:amount\s*of\s*)?deduction(?:s)?\s*under\s*Chapter\s*VI-A\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /Total\s*deduction(?:s)?\s*claimed\s*under\s*Chapter\s*VI-A\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i,
+      // More specific Form 16 patterns 
+      /^(?:\d+\.?\s*)?(?:Total\s*)?Aggregate\s*of\s*deduction(?:s)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
     ];
     
-    const totalDeductionResult = searchInSection(chapterVIAStart, -1, totalDeductionPatterns);
-    if (totalDeductionResult) {
-      const amount = this.parseAmount(totalDeductionResult);
-      form16Data.totalDeduction = amount;
-      form16Data.aggregateDeduction = amount;
-      console.log(`[PDF Extractor] Found total deductions: ₹${amount}`);
-    } else {
-      console.log('[PDF Extractor] No total deductions found with standard patterns');
+    // Only search within Chapter VI-A section with context awareness
+    let foundTotalDeduction = false;
+    if (chapterVIAStart >= 0) {
+      const chapterVIALines = lines.slice(chapterVIAStart, chapterVIAStart + 50); // Search reasonable window
+      for (let i = 0; i < chapterVIALines.length; i++) {
+        const line = chapterVIALines[i];
+        
+        // Look for aggregate deduction context
+        if (/aggregate.*deduction/i.test(line) || /total.*deduction.*chapter.*vi-a/i.test(line)) {
+          // Search this line and next few lines for amount
+          for (let j = i; j < Math.min(i + 3, chapterVIALines.length); j++) {
+            const searchLine = chapterVIALines[j];
+            for (const pattern of totalDeductionPatterns) {
+              const match = searchLine.match(pattern);
+              if (match && match[1]) {
+                const amount = this.parseAmount(match[1]);
+                if (amount > 0) {
+                  form16Data.totalDeduction = amount;
+                  form16Data.aggregateDeduction = amount;
+                  console.log('[PDF Extractor] Found aggregate deductions in Chapter VI-A');
+                  foundTotalDeduction = true;
+                  break;
+                }
+              }
+            }
+            if (foundTotalDeduction) break;
+          }
+        }
+        if (foundTotalDeduction) break;
+      }
+    }
+    
+    if (!foundTotalDeduction) {
+      console.log('[PDF Extractor] No aggregate deductions found in Chapter VI-A');
     }
     
     // Extract income chargeable under the head 'Salaries' with specific Form 16 patterns
@@ -702,7 +729,7 @@ export class PDFExtractorService {
     const netTaxIncomeResult = searchInSection(chapterVIAStart >= 0 ? chapterVIAStart : partBStart, -1, netTaxIncomePatterns);
     if (netTaxIncomeResult) {
       form16Data.taxableIncome = this.parseAmount(netTaxIncomeResult);
-      console.log(`[PDF Extractor] Found net tax income: ₹${netTaxIncomeResult}`);
+      console.log('[PDF Extractor] Found net tax income');
     }
     
     // Extract net tax payable with line-scoped patterns in tax computation section
@@ -778,35 +805,51 @@ export class PDFExtractorService {
       }
     }
     
-    // Extract tax paid so far (TDS deducted) with enhanced patterns
-    console.log('[PDF Extractor] Looking for tax paid so far (TDS)...');
+    // Extract TDS with context-aware patterns focusing on Form 16 Part A
+    console.log('[PDF Extractor] Looking for TDS in Part A (Tax deducted at source)...');
+    
     const tdsPatterns = [
-      // Enhanced patterns for tax paid so far
-      /^(?:\d+\.?\s*)?Tax\s*paid\s*(?:so\s*far)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?(?:Total\s*)?TDS\s*(?:Deducted|Paid)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Tax\s*Deducted\s*at\s*Source\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?(?:Amount\s*of\s*)?Tax\s*deducted\s*(?:and\s*deposited)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Tax\s*already\s*paid\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Advance\s*(?:Tax\s*)?(?:Paid)?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+      // Context-anchored patterns for TDS in Form 16 Part A
+      /Tax\s*deducted\s*at\s*source\s*(?:\(TDS\))?\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /Total\s*tax\s*deducted\s*(?:and\s*deposited)?\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i,
+      /Amount\s*of\s*tax\s*deducted\s*[:\-]?\s*₹?\s*([0-9,]+\.?\d*)/i,
+      // Form 16 specific patterns
+      /^(?:\d+\.?\s*)?(?:Total\s*)?TDS\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
     ];
     
-    // Search in tax computation section (after Chapter VI-A)
-    const tdsResult = searchInSection(chapterVIAStart >= 0 ? chapterVIAStart : partBStart, -1, tdsPatterns);
-    if (tdsResult) {
-      form16Data.tdsDeducted = this.parseAmount(tdsResult);
-      console.log(`[PDF Extractor] Found tax paid so far (TDS): ₹${tdsResult}`);
-    } else {
-      console.log('[PDF Extractor] No tax paid so far found with enhanced patterns');
+    // Search specifically in Part A or tax computation section
+    let foundTDS = false;
+    const searchStartIndex = partBStart >= 0 ? 0 : 0; // Search from beginning for Part A
+    const searchEndIndex = partBStart >= 0 ? partBStart : Math.min(200, lines.length); // Before Part B or reasonable limit
+    
+    for (let i = searchStartIndex; i < searchEndIndex; i++) {
+      const line = lines[i];
       
-      // Fallback to global search for TDS patterns
-      for (const pattern of tdsPatterns) {
-        const match = text.match(pattern);
-        if (match) {
-          form16Data.tdsDeducted = this.parseAmount(match[1]);
-          console.log(`[PDF Extractor] Found TDS via fallback pattern: ₹${match[1]}`);
-          break;
+      // Look for TDS context in Part A
+      if (/tax.*deducted.*source|total.*tax.*deducted|tds/i.test(line)) {
+        // Search this line and next few lines for amount
+        for (let j = i; j < Math.min(i + 3, lines.length); j++) {
+          const searchLine = lines[j];
+          for (const pattern of tdsPatterns) {
+            const match = searchLine.match(pattern);
+            if (match && match[1]) {
+              const amount = this.parseAmount(match[1]);
+              if (amount > 0) { // Only accept non-zero amounts
+                form16Data.tdsDeducted = amount;
+                console.log('[PDF Extractor] Found TDS in Part A');
+                foundTDS = true;
+                break;
+              }
+            }
+          }
+          if (foundTDS) break;
         }
       }
+      if (foundTDS) break;
+    }
+    
+    if (!foundTDS) {
+      console.log('[PDF Extractor] No TDS found in Part A');
     }
     
     // Extract deductions by sections
