@@ -104,6 +104,8 @@ export default function Upload() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [taxResults, setTaxResults] = useState<any>(null);
+  const [processingStatus, setProcessingStatus] = useState<'idle' | 'processing' | 'completed' | 'failed'>('idle');
+  const [processingError, setProcessingError] = useState<string | null>(null);
 
   const createDocumentMutation = useMutation({
     mutationFn: async (data: { fileName: string; assessmentYear: string; filePath?: string }) => {
@@ -142,6 +144,8 @@ export default function Upload() {
       queryClient.invalidateQueries({ queryKey: ['/api/tax-documents'] });
       setCurrentDocument(data.document);
       // Start polling for extracted data
+      setProcessingStatus('processing');
+      setProcessingError(null);
       pollForExtractedData(data.document.id);
       setCurrentStep(2);
       toast({
@@ -214,15 +218,21 @@ export default function Upload() {
         
         if (document.status === 'completed' && document.extractedData) {
           setExtractedData(document.extractedData);
+          setProcessingStatus('completed');
+          setProcessingError(null);
+          setIsUploading(false);
           toast({
             title: "Processing Complete",
             description: "Your Form 16 data has been extracted successfully!",
           });
           return;
         } else if (document.status === 'failed') {
+          setProcessingStatus('failed');
+          setProcessingError(document.errorMessage || "Failed to extract data from your Form 16. Please try uploading again.");
+          setIsUploading(false);
           toast({
             title: "Processing Failed",
-            description: "Failed to extract data from your Form 16. Please try uploading again.",
+            description: document.errorMessage || "Failed to extract data from your Form 16. Please try uploading again.",
             variant: "destructive",
           });
           return;
@@ -276,6 +286,8 @@ export default function Upload() {
       });
 
       // Start polling for extraction results
+      setProcessingStatus('processing');
+      setProcessingError(null);
       pollForExtractedData(documentResult.document.id);
 
     } catch (error) {
@@ -446,6 +458,19 @@ export default function Upload() {
       currency: 'INR',
       maximumFractionDigits: 0
     }).format(amount);
+  };
+
+  // Retry processing function
+  const handleRetryProcessing = () => {
+    setProcessingStatus('idle');
+    setProcessingError(null);
+    setExtractedData(null);
+    setCurrentStep(1);
+    setIsUploading(false);
+    toast({
+      title: "Ready to Retry",
+      description: "Please upload your Form 16 again.",
+    });
   };
 
   const incomeSourceOptions = [
@@ -683,7 +708,59 @@ export default function Upload() {
 
         {/* Step 2: Review Extracted Data */}
         <TabsContent value="2" className="space-y-6">
-          {extractedData ? (
+          {processingStatus === 'processing' && (
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                  <h3 className="text-xl font-semibold">Processing Your Document</h3>
+                  <p className="text-muted-foreground text-center max-w-md">
+                    Please wait while we extract data from your Form 16...
+                  </p>
+                  <p className="text-sm text-muted-foreground">This usually takes 1-2 minutes</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          
+          {processingStatus === 'failed' && (
+            <Card className="border-red-200 dark:border-red-800">
+              <CardContent className="pt-6">
+                <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                  <AlertCircle className="h-12 w-12 text-red-600" />
+                  <h3 className="text-xl font-semibold text-red-600">Processing Failed</h3>
+                  <div className="text-center max-w-md space-y-2">
+                    <p className="text-muted-foreground">
+                      {processingError || "We couldn't extract data from your Form 16. This might be due to:"}
+                    </p>
+                    <ul className="text-sm text-muted-foreground list-disc list-inside space-y-1">
+                      <li>Corrupted or invalid PDF file</li>
+                      <li>Scanned document with poor quality</li>
+                      <li>Unsupported PDF format</li>
+                    </ul>
+                  </div>
+                  <div className="flex space-x-4">
+                    <Button
+                      onClick={handleRetryProcessing}
+                      variant="default"
+                      data-testid="button-retry-upload"
+                    >
+                      <UploadIcon className="h-4 w-4 mr-2" />
+                      Try Another File
+                    </Button>
+                    <Button
+                      onClick={() => window.location.href = '/'}
+                      variant="outline"
+                    >
+                      Back to Dashboard
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          
+          {extractedData && processingStatus === 'completed' ? (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Employee Information */}
               <Card>
