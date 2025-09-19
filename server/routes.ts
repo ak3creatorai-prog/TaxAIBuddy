@@ -121,6 +121,103 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // NEW: Synchronous upload and extraction endpoint
+  app.post("/api/documents/upload-and-extract", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { fileName, assessmentYear, uploadURL } = req.body;
+      
+      console.log(`[SYNC Upload] Starting synchronous upload and extraction for ${fileName}`);
+      
+      // Set ACL policy for uploaded file
+      const objectStorageService = new ObjectStorageService();
+      const objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
+        uploadURL,
+        {
+          owner: userId,
+          visibility: "private"
+        }
+      );
+      
+      // Create document record
+      const document = await storage.createTaxDocument({
+        userId,
+        fileName,
+        filePath: objectPath,
+        assessmentYear,
+        status: 'processing'
+      });
+      
+      console.log(`[SYNC Upload] Document created with ID: ${document.id}`);
+      
+      try {
+        // Get PDF file from storage
+        const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
+        
+        // Download PDF with size validation
+        const chunks: Buffer[] = [];
+        const maxSize = 50 * 1024 * 1024; // 50MB limit
+        const sourceStream = objectFile.createReadStream();
+        const byteLimitTransform = new ByteLimitTransform(maxSize);
+        
+        const collectTransform = new Transform({
+          transform(chunk, encoding, callback) {
+            chunks.push(chunk);
+            callback(null, chunk);
+          }
+        });
+        
+        await pipeline(sourceStream, byteLimitTransform, collectTransform);
+        const pdfBuffer = Buffer.concat(chunks);
+        
+        console.log(`[SYNC Upload] PDF downloaded, extracting data...`);
+        
+        // Extract data from PDF synchronously
+        const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
+        
+        console.log(`[SYNC Upload] Extraction completed:`, JSON.stringify(extractedData, null, 2));
+        
+        // Update document with extracted data
+        const completedDocument = await storage.updateTaxDocument(document.id, userId, {
+          extractedData,
+          status: 'completed',
+          processedAt: new Date()
+        });
+        
+        console.log(`[SYNC Upload] Document processing completed successfully`);
+        
+        // Return completed document with extracted data
+        res.json({ 
+          document: completedDocument,
+          extractedData,
+          success: true
+        });
+        
+      } catch (extractionError) {
+        console.error(`[SYNC Upload] Extraction failed:`, extractionError);
+        
+        // Update document as failed
+        await storage.updateTaxDocument(document.id, userId, {
+          status: 'failed',
+          processedAt: new Date()
+        });
+        
+        // Return specific error message
+        const errorMessage = extractionError instanceof Error ? extractionError.message : 'Unknown extraction error';
+        res.status(422).json({ 
+          error: 'PDF Processing Failed',
+          message: errorMessage,
+          document: document,
+          success: false
+        });
+      }
+      
+    } catch (error) {
+      console.error('Error in synchronous upload:', error);
+      res.status(500).json({ error: 'Upload and extraction failed', success: false });
+    }
+  });
+
   // Object storage routes for PDF uploads
   app.get("/objects/:objectPath(*)", isAuthenticated, async (req: any, res) => {
     const userId = req.user?.claims?.sub;
@@ -181,50 +278,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // DEPRECATED: Old async upload endpoint - keeping for backwards compatibility
   app.put("/api/tax-documents/:id/upload-complete", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const documentId = req.params.id;
-      const { uploadURL } = req.body;
-
-      const objectStorageService = new ObjectStorageService();
-      const objectPath = await objectStorageService.trySetObjectEntityAclPolicy(
-        uploadURL,
-        {
-          owner: userId,
-          visibility: "private"
-        }
-      );
-
-      // Update document with file path
-      const updatedDocument = await storage.updateTaxDocument(documentId, userId, {
-        filePath: objectPath,
-        status: 'processing'
-      });
-
-      res.json({ document: updatedDocument });
-
-      console.log(`[ROUTE DEBUG] Upload complete route finished, about to start background processing for ${documentId}`);
-      
-      // Process PDF in background after returning response
-      console.log(`[ROUTE DEBUG] Calling processDocumentAsync function for ${documentId}`);
-      void processDocumentAsync(documentId, userId, objectPath, updatedDocument).catch(async (error) => {
-        console.error(`[ROUTE DEBUG] Background processing failed for ${documentId}:`, error);
-        try {
-          await storage.updateTaxDocument(documentId, userId, {
-            status: 'failed',
-            processedAt: new Date()
-          });
-          console.log(`[ROUTE DEBUG] Document ${documentId} marked as failed due to processing error`);
-        } catch (updateError) {
-          console.error(`[ROUTE DEBUG] Failed to mark document ${documentId} as failed:`, updateError);
-        }
-      });
-      console.log(`[ROUTE DEBUG] processDocumentAsync background job started for ${documentId}`);
-    } catch (error) {
-      console.error('Error in upload-complete route:', error);
-      res.status(500).json({ error: 'Upload processing failed' });
-    }
+    // This endpoint is now deprecated in favor of synchronous processing
+    res.status(410).json({ 
+      error: 'This endpoint has been deprecated', 
+      message: 'Use POST /api/documents/upload-and-extract instead' 
+    });
   });
 
   // Separate async function for PDF processing
