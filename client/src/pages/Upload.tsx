@@ -348,15 +348,14 @@ export default function Upload() {
 
       const allDeductions = { ...extractedDeductions, ...additionalDeductionsMap, ...investmentDeductions };
 
-      // Call tax calculation API
-      const response = await fetch('/api/tax-calculations/compare', {
+      // Call NEW tax calculation API
+      const response = await fetch('/api/tax/calculate-comparison', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          grossIncome: grossIncome.toString(),
-          deductions: allDeductions,
-          assessmentYear
+          grossIncome,
+          additionalInvestments: allDeductions
         })
       });
 
