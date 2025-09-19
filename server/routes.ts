@@ -905,6 +905,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // DEBUG: Test PDF extraction endpoint
+  app.post('/api/debug/pdf-extract', isAuthenticated, async (req: any, res) => {
+    try {
+      const { pdfPath } = req.body;
+      if (!pdfPath) {
+        return res.status(400).json({ error: 'pdfPath is required' });
+      }
+
+      // Read the test PDF file
+      const fs = require('fs');
+      const path = require('path');
+      const fullPath = path.resolve(pdfPath);
+      
+      if (!fs.existsSync(fullPath)) {
+        return res.status(404).json({ error: 'PDF file not found' });
+      }
+
+      const pdfBuffer = fs.readFileSync(fullPath);
+      
+      // Extract using our service
+      const pdfExtractor = new PDFExtractorService();
+      
+      // First, get raw text
+      const pdf = require('pdf-parse');
+      const rawData = await pdf(pdfBuffer);
+      const rawText = rawData.text;
+      
+      // Then run through our parser
+      const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
+      
+      // Return both raw and parsed for debugging
+      res.json({
+        rawTextLength: rawText.length,
+        rawTextPreview: rawText.substring(0, 2000),
+        extractedData,
+        textLines: rawText.split('\n').slice(0, 50).map((line: string, i: number) => `${i+1}: ${line}`)
+      });
+      
+    } catch (error) {
+      console.error('Debug PDF extraction error:', error);
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }

@@ -338,59 +338,87 @@ export class PDFExtractorService {
     const partBStart = lines.findIndex(line => /^(?:Part\s*)?B\s*[:\-]?/i.test(line) || /^B\s*\(\s*1\s*\)/i.test(line));
     const chapterVIAStart = lines.findIndex(line => /Chapter\s*VI-A/i.test(line));
     
-    // Extract PAN - prioritize employee PAN with specific context
-    const employeePanPatterns = [
-      /^PAN\s*(?:of\s*)?(?:Employee|Deductee)\s*[:\-]?\s*([A-Z]{5}\d{4}[A-Z])/i,
-      /^Employee\s*PAN\s*[:\-]?\s*([A-Z]{5}\d{4}[A-Z])/i
-    ];
-    
-    // Try employee-specific patterns first
-    for (const line of lines) {
-      for (const pattern of employeePanPatterns) {
-        const match = line.match(pattern);
-        if (match) {
-          form16Data.pan = match[1].toUpperCase();
-          break;
-        }
-      }
-      if (form16Data.pan) break;
-    }
-    
-    // Fallback to general PAN if not found
-    if (!form16Data.pan) {
-      const generalPanPatterns = [
-        /^PAN\s*[:\-]?\s*([A-Z]{5}\d{4}[A-Z])/i,
-        /PAN\s*No\.?\s*[:\-]?\s*([A-Z]{5}\d{4}[A-Z])/i
-      ];
+    // Extract PAN - updated for the actual Form 16 format where PAN appears after "PAN of the Employee"
+    let foundEmployeePAN = false;
+    for (let i = 0; i < lines.length && !foundEmployeePAN; i++) {
+      const line = lines[i];
       
-      for (const line of lines) {
-        for (const pattern of generalPanPatterns) {
-          const match = line.match(pattern);
-          if (match) {
-            form16Data.pan = match[1].toUpperCase();
+      // Check if this line contains "PAN of the Employee" header
+      if (/PAN\s+of\s+the\s+Employee/i.test(line)) {
+        // Look for the actual PAN in the next few lines
+        for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+          const nextLine = lines[j].trim();
+          const panMatch = nextLine.match(/([A-Z]{5}\d{4}[A-Z])/);
+          if (panMatch) {
+            form16Data.pan = panMatch[1].toUpperCase();
+            foundEmployeePAN = true;
             break;
           }
         }
-        if (form16Data.pan) break;
+      }
+      
+      // Also check if the line directly contains a PAN pattern
+      if (!foundEmployeePAN) {
+        const directPanMatch = line.match(/([A-Z]{5}\d{4}[A-Z])/);
+        if (directPanMatch && line.match(/Employee/i)) {
+          form16Data.pan = directPanMatch[1].toUpperCase();
+          foundEmployeePAN = true;
+        }
       }
     }
     
-    // Extract employee name with context
+    // Fallback to finding any PAN in the text
+    if (!form16Data.pan) {
+      for (const line of lines) {
+        const panMatch = line.match(/([A-Z]{5}\d{4}[A-Z])/);
+        if (panMatch) {
+          form16Data.pan = panMatch[1].toUpperCase();
+          break;
+        }
+      }
+    }
+    
+    // Extract employee name with context - updated patterns for the actual Form 16 format
     const employeeNamePatterns = [
       /^(?:Name\s*of\s*)?Employee(?:'s)?\s*Name\s*[:\-]\s*(.+)$/i,
       /^Employee\s*[:\-]\s*(.+)$/i,
       /^Name\s*[:\-]\s*(.+)$/i
     ];
     
-    for (const line of lines) {
-      for (const pattern of employeeNamePatterns) {
-        const match = line.match(pattern);
-        if (match && match[1].length > 2) {
-          form16Data.employeeName = match[1].trim();
-          break;
+    // Look for employee name by identifying the section with employee details
+    let foundEmployeeName = false;
+    for (let i = 0; i < lines.length && !foundEmployeeName; i++) {
+      const line = lines[i];
+      
+      // Check if this line contains "Name and address of the Employee"
+      if (/Name\s+and\s+address\s+of\s+the\s+Employee/i.test(line)) {
+        // Look for the actual name in the next few lines
+        for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+          const nextLine = lines[j].trim();
+          // Skip empty lines and employer info
+          if (nextLine && 
+              !nextLine.match(/address|employer|plot|sipcot|navalur|technologies|limited/i) &&
+              nextLine.length > 5 &&
+              !nextLine.match(/^\d/) &&
+              nextLine.match(/^[A-Z\s]+$/)) {
+            form16Data.employeeName = nextLine.trim();
+            foundEmployeeName = true;
+            break;
+          }
         }
       }
-      if (form16Data.employeeName) break;
+      
+      // Fallback to standard patterns
+      if (!foundEmployeeName) {
+        for (const pattern of employeeNamePatterns) {
+          const match = line.match(pattern);
+          if (match && match[1].length > 2) {
+            form16Data.employeeName = match[1].trim();
+            foundEmployeeName = true;
+            break;
+          }
+        }
+      }
     }
     
     // Extract employee address - capture multiple lines
@@ -423,22 +451,44 @@ export class PDFExtractorService {
       }
     }
     
-    // Extract employer name with specific context
-    const employerNamePatterns = [
-      /^(?:Name\s*of\s*)?Employer(?:'s)?\s*Name\s*[:\-]\s*(.+)$/i,
-      /^Employer\s*[:\-]\s*(.+)$/i,
-      /^Company\s*Name\s*[:\-]\s*(.+)$/i
-    ];
-    
-    for (const line of lines) {
-      for (const pattern of employerNamePatterns) {
-        const match = line.match(pattern);
-        if (match && match[1].length > 2) {
-          form16Data.employerName = match[1].trim();
-          break;
+    // Extract employer name - updated for the actual Form 16 format
+    let foundEmployerName = false;
+    for (let i = 0; i < lines.length && !foundEmployerName; i++) {
+      const line = lines[i];
+      
+      // Check if this line contains "Name and address of the Employer"
+      if (/Name\s+and\s+address\s+of\s+the\s+Employer/i.test(line)) {
+        // Look for the actual name in the next few lines
+        for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+          const nextLine = lines[j].trim();
+          // Look for company name patterns (usually all caps with "LIMITED", "LTD", etc.)
+          if (nextLine && 
+              nextLine.match(/LIMITED|LTD|PRIVATE|PVT|TECHNOLOGIES|COMPANY/i) &&
+              nextLine.length > 5) {
+            form16Data.employerName = nextLine.trim();
+            foundEmployerName = true;
+            break;
+          }
         }
       }
-      if (form16Data.employerName) break;
+      
+      // Fallback to standard patterns
+      if (!foundEmployerName) {
+        const employerNamePatterns = [
+          /^(?:Name\s*of\s*)?Employer(?:'s)?\s*Name\s*[:\-]\s*(.+)$/i,
+          /^Employer\s*[:\-]\s*(.+)$/i,
+          /^Company\s*Name\s*[:\-]\s*(.+)$/i
+        ];
+        
+        for (const pattern of employerNamePatterns) {
+          const match = line.match(pattern);
+          if (match && match[1].length > 2) {
+            form16Data.employerName = match[1].trim();
+            foundEmployerName = true;
+            break;
+          }
+        }
+      }
     }
     
     // Extract employer address - capture multiple lines
@@ -509,16 +559,72 @@ export class PDFExtractorService {
       return null;
     };
     
-    // Extract gross salary with Form 16 specific line-scoped patterns
-    const grossSalaryPatterns = [
-      /^(?:\d+\.?\s*)?(?:Gross\s*)?Salary\s*(?:as\s*per\s*provisions\s*of\s*section\s*17\s*\(1\))?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?(?:Total\s*)?Annual\s*Salary\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
-      /^(?:\d+\.?\s*)?Gross\s*Salary\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
-    ];
+    // Extract gross salary with Form 16 specific patterns - updated for actual format
+    let foundGrossSalary = false;
+    for (let i = 0; i < lines.length && !foundGrossSalary; i++) {
+      const line = lines[i];
+      
+      // Look for "Gross Salary" section
+      if (/^\s*1\.\s*Gross\s*Salary/i.test(line)) {
+        // Look for section (d) Total which contains the gross salary amount
+        for (let j = i + 1; j < Math.min(i + 25, lines.length); j++) {
+          const nextLine = lines[j];
+          if (/\(d\)\s*Total/i.test(nextLine)) {
+            // First check if amount is directly on the same line
+            const inlineMatch = nextLine.match(/\(d\)\s*Total[^\d]*(\d{1,3}(?:,\d{3})*\.?\d*)/i);
+            if (inlineMatch) {
+              const amount = parseFloat(inlineMatch[1].replace(/,/g, ''));
+              if (amount > 50000) {
+                form16Data.grossSalary = this.parseAmount(inlineMatch[1]);
+                foundGrossSalary = true;
+                break;
+              }
+            }
+            
+            // Look in the next several lines for amount (often in tabular format)
+            for (let k = j + 1; k < Math.min(j + 8, lines.length); k++) {
+              const amountLine = lines[k].trim();
+              
+              // Look for standalone numeric amounts (right-aligned in Form 16)
+              if (amountLine.match(/^\s*\d{1,3}(?:,\d{3})*\.?\d*\s*$/)) {
+                const amount = parseFloat(amountLine.replace(/,/g, ''));
+                if (amount > 50000) {
+                  form16Data.grossSalary = this.parseAmount(amountLine.trim());
+                  foundGrossSalary = true;
+                  break;
+                }
+              }
+              
+              // Also look for amounts with currency symbols or labels
+              const labeledAmountMatch = amountLine.match(/(?:Rs\.?|₹)?\s*(\d{1,3}(?:,\d{3})*\.?\d*)/i);
+              if (labeledAmountMatch) {
+                const amount = parseFloat(labeledAmountMatch[1].replace(/,/g, ''));
+                if (amount > 50000) {
+                  form16Data.grossSalary = this.parseAmount(labeledAmountMatch[1]);
+                  foundGrossSalary = true;
+                  break;
+                }
+              }
+            }
+            
+            if (foundGrossSalary) break;
+          }
+        }
+      }
+    }
     
-    const grossSalaryResult = searchInSection(partBStart, chapterVIAStart, grossSalaryPatterns);
-    if (grossSalaryResult) {
-      form16Data.grossSalary = this.parseAmount(grossSalaryResult);
+    // Fallback patterns
+    if (!foundGrossSalary) {
+      const grossSalaryPatterns = [
+        /^(?:\d+\.?\s*)?(?:Gross\s*)?Salary\s*(?:as\s*per\s*provisions\s*of\s*section\s*17\s*\(1\))?\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+        /^(?:\d+\.?\s*)?(?:Total\s*)?Annual\s*Salary\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i,
+        /^(?:\d+\.?\s*)?Gross\s*Salary\s*[:\-]\s*₹?\s*([0-9,]+\.?\d*)/i
+      ];
+      
+      const grossSalaryResult = searchInSection(partBStart, chapterVIAStart, grossSalaryPatterns);
+      if (grossSalaryResult) {
+        form16Data.grossSalary = this.parseAmount(grossSalaryResult);
+      }
     }
     
     // Extract gross total income with Form 16 specific line-scoped patterns (removed conflicting pattern)
@@ -603,10 +709,56 @@ export class PDFExtractorService {
       form16Data.basicSalary = this.parseAmount(basicSalaryMatch[1]);
     }
     
-    // Extract HRA
-    const hraMatch = text.match(/HRA\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i);
-    if (hraMatch) {
-      form16Data.hra = this.parseAmount(hraMatch[1]);
+    // Extract HRA - updated for actual Form 16 format 
+    let foundHRA = false;
+    for (let i = 0; i < lines.length && !foundHRA; i++) {
+      const line = lines[i];
+      
+      // Look for "House rent allowance under section 10(13A)"
+      if (/House\s*rent\s*allowance\s*under\s*section\s*10\s*\(13A\)/i.test(line)) {
+        // Look for the amount in the next few lines, expecting larger amounts (> 1000)
+        for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+          const amountLine = lines[j].trim();
+          const amountMatch = amountLine.match(/(\d{1,3}(?:,\d{3})*\.?\d*)/);
+          if (amountMatch) {
+            const amount = parseFloat(amountMatch[1].replace(/,/g, ''));
+            // Only accept amounts that make sense for HRA (usually > 1000)
+            if (amount > 1000) {
+              form16Data.hra = this.parseAmount(amountMatch[1]);
+              foundHRA = true;
+              break;
+            }
+          }
+        }
+      }
+      
+      // Alternative pattern: look for explicit HRA amount lines
+      if (!foundHRA && (/^\s*\(e\)\s*House\s*rent\s*allowance/i.test(line))) {
+        // Look for amount in same or next few lines
+        for (let j = i; j < Math.min(i + 3, lines.length); j++) {
+          const amountLine = lines[j];
+          const amountMatch = amountLine.match(/(\d{1,3}(?:,\d{3})*\.?\d*)/);
+          if (amountMatch) {
+            const amount = parseFloat(amountMatch[1].replace(/,/g, ''));
+            if (amount > 1000) {
+              form16Data.hra = this.parseAmount(amountMatch[1]);
+              foundHRA = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    // Fallback pattern
+    if (!foundHRA) {
+      const hraMatch = text.match(/HRA\s*:?\s*₹?\s*([0-9,]+\.?\d*)/i);
+      if (hraMatch) {
+        const amount = parseFloat(hraMatch[1].replace(/,/g, ''));
+        if (amount > 1000) {
+          form16Data.hra = this.parseAmount(hraMatch[1]);
+        }
+      }
     }
     
     // Extract TDS
