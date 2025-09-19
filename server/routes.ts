@@ -101,7 +101,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`[DEBUG] Manually triggering processing for document ${documentId} with file path: ${document.filePath}`);
       
       // Manually trigger background processing
-      void processDocumentAsync(documentId, userId, document.filePath, document).catch(async (error) => {
+      void processDocumentAsync(documentId, userId, document.filePath || "", document).catch(async (error) => {
         console.error(`[DEBUG] Manual processing failed for ${documentId}:`, error);
         try {
           await storage.updateTaxDocument(documentId, userId, {
@@ -576,7 +576,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
     } catch (error) {
       console.error(`[PDF Processing] Critical error during processing:`, error);
-      console.error(`[PDF Processing] Error stack:`, error.stack);
+      console.error(`[PDF Processing] Error stack:`, error instanceof Error ? error.stack : 'No stack trace available');
       
       // Mark document as failed
       try {
