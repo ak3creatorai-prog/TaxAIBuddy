@@ -101,6 +101,10 @@ export default function Dashboard() {
     setLocation('/tax-planning');
   };
 
+  const handleViewAllDocuments = () => {
+    setLocation('/documents');
+  };
+
   useEffect(() => {
     if (error && isUnauthorizedError(error as Error)) {
       toast({
@@ -308,7 +312,7 @@ export default function Dashboard() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle>Recent Documents</CardTitle>
-              <Button variant="ghost" size="sm" data-testid="button-view-all-documents">
+              <Button variant="ghost" size="sm" onClick={handleViewAllDocuments} data-testid="button-view-all-documents">
                 View All
                 <ArrowUpRight className="h-4 w-4 ml-1" />
               </Button>
