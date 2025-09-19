@@ -89,6 +89,18 @@ export default function Dashboard() {
     setLocation('/upload');
   };
 
+  const handleCompareRegimesClick = () => {
+    setLocation('/tax-comparison');
+  };
+
+  const handleAddIncomeClick = () => {
+    setLocation('/additional-income');
+  };
+
+  const handleAddInvestmentClick = () => {
+    setLocation('/tax-planning');
+  };
+
   useEffect(() => {
     if (error && isUnauthorizedError(error as Error)) {
       toast({
@@ -482,17 +494,17 @@ export default function Dashboard() {
               Upload Form 16
             </Button>
             
-            <Button variant="outline" className="w-full justify-start" data-testid="button-compare-regimes">
+            <Button variant="outline" className="w-full justify-start" onClick={handleCompareRegimesClick} data-testid="button-compare-regimes">
               <Calculator className="h-4 w-4 mr-2" />
               Compare Tax Regimes
             </Button>
             
-            <Button variant="outline" className="w-full justify-start" data-testid="button-add-income">
+            <Button variant="outline" className="w-full justify-start" onClick={handleAddIncomeClick} data-testid="button-add-income">
               <DollarSign className="h-4 w-4 mr-2" />
               Add Additional Income
             </Button>
             
-            <Button variant="outline" className="w-full justify-start" data-testid="button-add-investment">
+            <Button variant="outline" className="w-full justify-start" onClick={handleAddInvestmentClick} data-testid="button-add-investment">
               <PiggyBank className="h-4 w-4 mr-2" />
               Add Investments
             </Button>
