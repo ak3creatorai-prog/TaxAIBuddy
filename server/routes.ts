@@ -200,7 +200,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       try {
         // Get PDF file from storage
+        console.log(`[SYNC Upload] Getting PDF file from storage...`);
         const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
+        console.log(`[SYNC Upload] Object file retrieved, starting download...`);
         
         // Download PDF with size validation
         const chunks: Buffer[] = [];
@@ -215,13 +217,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         });
         
+        console.log(`[SYNC Upload] Starting PDF download pipeline...`);
         await pipeline(sourceStream, byteLimitTransform, collectTransform);
         const pdfBuffer = Buffer.concat(chunks);
+        console.log(`[SYNC Upload] PDF downloaded successfully, size: ${pdfBuffer.length} bytes`);
         
-        console.log(`[SYNC Upload] PDF downloaded, extracting data...`);
+        console.log(`[SYNC Upload] Starting PDF extraction...`);
         
-        // Extract data from PDF synchronously
-        const extractedData = await pdfExtractor.extractForm16Data(pdfBuffer);
+        // Extract data from PDF synchronously with timeout
+        const extractionPromise = pdfExtractor.extractForm16Data(pdfBuffer);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('PDF extraction timeout after 30 seconds')), 30000)
+        );
+        
+        const extractedData = await Promise.race([extractionPromise, timeoutPromise]);
+        console.log(`[SYNC Upload] PDF extraction completed successfully`);
         
         console.log(`[SYNC Upload] Extraction completed:`, JSON.stringify(extractedData, null, 2));
         
