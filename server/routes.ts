@@ -60,6 +60,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get assessment year from query params, fallback to default
       const assessmentYear = req.query.assessmentYear as string || defaultAssessmentYear;
       
+      console.log(`[Dashboard] Request for userId: ${userId}, assessmentYear: ${assessmentYear}`);
+      
       const [documents, incomeSources, investments, calculations, suggestions] = await Promise.all([
         storage.getTaxDocumentsByUser(userId),
         storage.getIncomeSourcesByUser(userId, assessmentYear),
@@ -68,9 +70,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         storage.getTaxSuggestionsByUser(userId, assessmentYear)
       ]);
 
+      console.log(`[Dashboard] Retrieved ${documents.length} total documents for user`);
+      console.log(`[Dashboard] Documents:`, documents.map(d => ({ id: d.id, assessmentYear: d.assessmentYear, status: d.status })));
+
       // Filter documents and calculations by assessment year for consistency
       const filteredDocuments = documents.filter(doc => doc.assessmentYear === assessmentYear);
       const filteredCalculations = calculations.filter(calc => calc.assessmentYear === assessmentYear);
+
+      console.log(`[Dashboard] After filtering: ${filteredDocuments.length} documents for year ${assessmentYear}`);
 
       res.json({
         documents: filteredDocuments,
@@ -83,6 +90,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching dashboard data:", error);
       res.status(500).json({ message: "Failed to fetch dashboard data" });
+    }
+  });
+
+  // DEBUG: Test storage method directly
+  app.get("/api/debug/storage-test", isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      console.log(`[DEBUG Storage Test] Testing for userId: ${userId}`);
+      
+      const documents = await storage.getTaxDocumentsByUser(userId);
+      console.log(`[DEBUG Storage Test] Retrieved ${documents.length} documents`);
+      
+      documents.forEach((doc, index) => {
+        console.log(`[DEBUG Storage Test] Document ${index + 1}:`, {
+          id: doc.id,
+          userId: doc.userId, 
+          assessmentYear: doc.assessmentYear,
+          status: doc.status,
+          fileName: doc.fileName
+        });
+      });
+      
+      res.json({
+        userId,
+        documentsFound: documents.length,
+        documents: documents.map(d => ({
+          id: d.id,
+          userId: d.userId,
+          assessmentYear: d.assessmentYear,
+          status: d.status,
+          fileName: d.fileName,
+          extractedData: d.extractedData
+        }))
+      });
+    } catch (error) {
+      console.error("Debug storage test error:", error);
+      res.status(500).json({ error: (error as Error).message });
     }
   });
 
